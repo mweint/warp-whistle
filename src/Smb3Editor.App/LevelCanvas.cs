@@ -112,6 +112,7 @@ public sealed class LevelCanvas : Control
     public event Action<string>? LayerOrderFeedback;
     public event Action<EditorActionFeedback>? ActionFeedbackAvailable;
     public event Action<IReadOnlyList<Diagnostic>>? ActiveRenderDiagnosticsChanged;
+    public event Action<int, int>? CatalogPlacementRequested;
 
     public bool HasBlockingRenderErrors => _activeRenderDiagnostics.Any(item => item.Severity == DiagnosticSeverity.Error);
     public bool CanFixActiveIssue
@@ -179,6 +180,8 @@ public sealed class LevelCanvas : Control
         }
     }
 
+    public IReadOnlySet<int> FourByteGeneratorIds { get; set; } = new HashSet<int>();
+
     public LevelDocument? Document
     {
         get => _document;
@@ -236,9 +239,12 @@ public sealed class LevelCanvas : Control
                 X = Math.Clamp(x, 0, _document.Header.IsVertical ? 15 : 255),
                 Y = Math.Clamp(y, 0, _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 31)
             };
-            _document = _document with { Enemies = _document.Enemies.Append(copy).ToArray() };
+            var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(copy));
+            var reordered = enemies[^1].Index != next;
+            _document = _document with { Enemies = enemies };
             _selectedEnemy = next;
             Commit(previous);
+            if (reordered) ReportEnemyStreamReordered();
         }
     }
 
@@ -360,7 +366,7 @@ public sealed class LevelCanvas : Control
         }
     }
 
-    public void AddFixedGenerator(int generatorId)
+    public void AddFixedGenerator(int generatorId, int x = 1, int y = 1)
     {
         if (_document is null || generatorId is < 0 or > 0x7F)
         {
@@ -371,14 +377,50 @@ public sealed class LevelCanvas : Control
         var upper = (byte)((generatorId & 0x70) << 1);
         var shape = (byte)(generatorId & 0x0F);
         var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(static item => item.Index) + 1;
-        var element = new LevelElement(next, LevelElementKind.FixedGenerator, generatorId, 1, 1, shape, null, upper, 0x01, 1, 1);
+        var maxX = _document.Header.IsVertical ? 15 : 255;
+        var maxY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 26;
+        x = Math.Clamp(x, 0, maxX);
+        y = Math.Clamp(y, 0, maxY);
+        var first = _document.Header.IsVertical
+            ? (byte)((upper & 0xF0) | (y % 15))
+            : (byte)((upper & 0xE0) | (y & 0x1F));
+        var second = _document.Header.IsVertical
+            ? (byte)(((y / 15) << 4) | (x & 0x0F))
+            : (byte)x;
+        var element = new LevelElement(next, LevelElementKind.FixedGenerator, generatorId, x, y, shape, null, first, second, x, y);
         _document = _document with { Elements = _document.Elements.Append(element).ToArray() };
         _selectedElement = next;
         _selectedEnemy = null;
         Commit(previous);
     }
 
-    public void AddEnemy(byte id)
+    public void AddVariableGenerator(int generatorId, int x = 1, int y = 1)
+    {
+        if (_document is null || generatorId is < 0 or > 119) return;
+        var previous = _document;
+        var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(static item => item.Index) + 1;
+        var maxX = _document.Header.IsVertical ? 15 : 255;
+        var maxY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 26;
+        x = Math.Clamp(x, 0, maxX);
+        y = Math.Clamp(y, 0, maxY);
+        var encoded = generatorId + 1;
+        var firstHigh = (encoded / 15) << 5;
+        var shape = (byte)(((encoded % 15) << 4) | 0x01);
+        var first = _document.Header.IsVertical
+            ? (byte)((firstHigh & 0xF0) | (y % 15))
+            : (byte)((firstHigh & 0xE0) | (y & 0x1F));
+        var second = _document.Header.IsVertical
+            ? (byte)(((y / 15) << 4) | (x & 0x0F))
+            : (byte)x;
+        byte? extra = FourByteGeneratorIds.Contains(generatorId) ? (byte)0 : null;
+        var element = new LevelElement(next, LevelElementKind.VariableGenerator, generatorId, x, y, shape, extra, first, second, x, y);
+        _document = _document with { Elements = _document.Elements.Append(element).ToArray() };
+        _selectedElement = next;
+        _selectedEnemy = null;
+        Commit(previous);
+    }
+
+    public void AddEnemy(byte id, int x = 1, int y = 1)
     {
         if (_document is null)
         {
@@ -387,12 +429,59 @@ public sealed class LevelCanvas : Control
 
         var previous = _document;
         var next = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(static item => item.Index) + 1;
-        var enemy = new EnemyElement(next, id, 1, 1);
-        _document = _document with { Enemies = _document.Enemies.Append(enemy).ToArray() };
+        x = Math.Clamp(x, 0, _document.Header.IsVertical ? 15 : 255);
+        y = Math.Clamp(y, 0, _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 31);
+        var second = _document.Header.IsVertical
+            ? (byte)(x & 0x0F)
+            : (byte)x;
+        var third = _document.Header.IsVertical
+            ? (byte)(((y / 15) << 4) | (y % 15))
+            : (byte)(y & 0x1F);
+        var enemy = new EnemyElement(next, id, x, y, 0, second, third, x, y);
+        var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(enemy));
+        var reordered = enemies[^1].Index != next;
+        _document = _document with { Enemies = enemies };
         _selectedEnemy = next;
         _selectedElement = null;
         Commit(previous);
+        if (reordered) ReportEnemyStreamReordered();
+        ReportEnemyEncodingState(enemy);
     }
+
+    public void ClearLevel()
+    {
+        if (_document is null || (_document.Elements.Count == 0 && _document.Enemies.Count == 0)) return;
+        var previous = _document;
+        _document = _document with { Elements = [], Enemies = [] };
+        _selectedElement = null;
+        _selectedEnemy = null;
+        Commit(previous);
+        ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Information, "Level cleared", "All placed generators and enemies were removed. Use Undo to restore them.", null, false, false));
+    }
+
+    private void ReportEnemyEncodingState(EnemyElement enemy)
+    {
+        if (_document is null) return;
+        var encoded = Smb3LevelCodec.EncodeEnemies(_document);
+        if (!encoded.IsSuccess)
+        {
+            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Error, "Enemy cannot be encoded", string.Join(" ", encoded.Diagnostics.Select(item => item.Message)), null, true, true));
+            return;
+        }
+        if (encoded.Value!.Length > _document.OriginalEnemyLength)
+        {
+            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Enemy stream grew", "This enemy needs relocation when you build. Export remains available only if legal bank space exists.", null, true, false));
+        }
+    }
+
+    private void ReportEnemyStreamReordered() =>
+        ActionFeedbackAvailable?.Invoke(new(
+            DiagnosticSeverity.Information,
+            "Placed in vanilla spawn order",
+            "SMB3 reads enemies in screen order. The stream was reordered so this enemy can spawn; Undo restores the prior order.",
+            null,
+            false,
+            false));
 
     public void DeleteSelection()
     {
@@ -446,6 +535,7 @@ public sealed class LevelCanvas : Control
         }
 
         var previous = _document;
+        var enemyReordered = false;
         if (_copiedElement is not null)
         {
             var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(static item => item.Index) + 1;
@@ -457,8 +547,11 @@ public sealed class LevelCanvas : Control
         else if (_copiedEnemy is not null)
         {
             var next = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(static item => item.Index) + 1;
-            var copy = _copiedEnemy with { Index = next, X = Math.Min(255, _copiedEnemy.X + 1) };
-            _document = _document with { Enemies = _document.Enemies.Append(copy).ToArray() };
+            var maximumX = _document.Header.IsVertical ? 15 : 255;
+            var copy = _copiedEnemy with { Index = next, X = Math.Min(maximumX, _copiedEnemy.X + 1) };
+            var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(copy));
+            enemyReordered = enemies[^1].Index != next;
+            _document = _document with { Enemies = enemies };
             _selectedEnemy = next;
             _selectedElement = null;
         }
@@ -468,6 +561,7 @@ public sealed class LevelCanvas : Control
         }
 
         Commit(previous);
+        if (enemyReordered) ReportEnemyStreamReordered();
     }
 
     public void MoveSelectionInOrder(int delta, bool coalesce = false)
@@ -513,9 +607,12 @@ public sealed class LevelCanvas : Control
         FlushWheelOrderBatch();
         Focus();
         var point = e.GetPosition(this);
+        var tileX = (int)(point.X / ScaledTile);
+        var tileY = (int)(point.Y / ScaledTile);
         if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
         {
-            CopySelectionTo((int)(point.X / ScaledTile), (int)(point.Y / ScaledTile));
+            if (CatalogPlacementRequested is not null) CatalogPlacementRequested(tileX, tileY);
+            else CopySelectionTo(tileX, tileY);
             e.Handled = true;
             return;
         }
@@ -527,8 +624,6 @@ public sealed class LevelCanvas : Control
             e.Handled = true;
             return;
         }
-        var tileX = (int)(point.X / ScaledTile);
-        var tileY = (int)(point.Y / ScaledTile);
 
         if (_document is not null && _selectedElement is int currentIndex &&
             _document.Elements.FirstOrDefault(item => item.Index == currentIndex) is { } current)
@@ -706,7 +801,8 @@ public sealed class LevelCanvas : Control
             var maxY = dragSource.Header.IsVertical ? (dragSource.Header.ScreenCount * 15) - 1 : 31;
             var x = Math.Clamp(_dragItemStartX + deltaX, 0, maxX);
             var y = Math.Clamp(_dragItemStartY + deltaY, 0, maxY);
-            _document = dragSource.MoveEnemy(enemyIndex, x, y);
+            var moved = dragSource.MoveEnemy(enemyIndex, x, y);
+            _document = moved with { Enemies = moved.OrderEnemiesForSpawn(moved.Enemies) };
         }
 
         UpdateRenderedLevel();
@@ -735,6 +831,11 @@ public sealed class LevelCanvas : Control
         if (_dragging && _dragStartDocument is not null && _document is not null && _dragStartDocument != _document)
         {
             EditCommitted?.Invoke(this, new LevelEditCommittedEventArgs(_dragStartDocument, _document));
+            if (!_dragStartDocument.Enemies.Select(static enemy => enemy.Index)
+                .SequenceEqual(_document.Enemies.Select(static enemy => enemy.Index)))
+            {
+                ReportEnemyStreamReordered();
+            }
         }
 
         _dragging = false;

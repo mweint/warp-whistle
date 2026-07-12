@@ -32,6 +32,50 @@ public sealed class LevelCodecTests
     }
 
     [Fact]
+    public void EnemyMovesKeepTheVanillaSpawnStreamOrdered()
+    {
+        var document = CreateDocument() with
+        {
+            Enemies =
+            [
+                new EnemyElement(0, 0x72, 32, 4),
+                new EnemyElement(1, 0x40, 96, 4),
+                new EnemyElement(2, 0x01, 160, 4)
+            ]
+        };
+
+        var moved = document.MoveEnemy(2, 16, 4);
+        moved = moved with { Enemies = moved.OrderEnemiesForSpawn(moved.Enemies) };
+
+        Assert.Equal(new[] { 2, 0, 1 }, moved.Enemies.Select(enemy => enemy.Index));
+        var encoded = Smb3LevelCodec.EncodeEnemies(moved);
+        Assert.True(encoded.IsSuccess);
+        Assert.Equal(new byte[] { 0x01, 0x01, 0x10, 0x04, 0x72, 0x20, 0x04, 0x40, 0x60, 0x04, 0xFF }, encoded.Value);
+    }
+
+    [Fact]
+    public void VerticalEnemyMovesUseRowsForSpawnOrder()
+    {
+        var document = CreateDocument() with
+        {
+            Header = CreateDocument().Header with { SizeAndStartY = 0x01, TilesetAndScroll = 0x10 },
+            Enemies =
+            [
+                new EnemyElement(0, 0x72, 1, 30),
+                new EnemyElement(1, 0x40, 2, 15)
+            ]
+        };
+
+        var moved = document.MoveEnemy(0, 1, 2);
+        moved = moved with { Enemies = moved.OrderEnemiesForSpawn(moved.Enemies) };
+
+        Assert.Equal(new[] { 0, 1 }, moved.Enemies.Select(enemy => enemy.Index));
+        var encoded = Smb3LevelCodec.EncodeEnemies(moved);
+        Assert.True(encoded.IsSuccess);
+        Assert.Equal(new byte[] { 0x01, 0x72, 0x01, 0x02, 0x40, 0x02, 0x10, 0xFF }, encoded.Value);
+    }
+
+    [Fact]
     public void SizeUsesLowNibbleAndPreservesStartPositionBits()
     {
         var header = CreateDocument().Header with { SizeAndStartY = 0xEA };

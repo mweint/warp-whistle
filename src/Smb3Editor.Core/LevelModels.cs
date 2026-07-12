@@ -111,6 +111,15 @@ public sealed record LevelDocument(
         return this with { Enemies = updated };
     }
 
+    /// <summary>
+    /// SMB3 indexes its enemy stream by horizontal screen (or vertical screen in vertical areas).
+    /// Preserve the original relative order for enemies sharing a spawn coordinate.
+    /// </summary>
+    public IReadOnlyList<EnemyElement> OrderEnemiesForSpawn(IEnumerable<EnemyElement> enemies) =>
+        Header.IsVertical
+            ? enemies.OrderBy(static enemy => enemy.Y).ThenBy(static enemy => enemy.Index).ToArray()
+            : enemies.OrderBy(static enemy => enemy.X).ThenBy(static enemy => enemy.Index).ToArray();
+
     public LevelDocument ResizeElement(int index, int? top = null, int? parameter = null, int? extraParameter = null, int? left = null)
     {
         var updated = Elements.Select(element =>

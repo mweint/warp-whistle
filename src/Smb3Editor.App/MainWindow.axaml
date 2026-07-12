@@ -54,27 +54,23 @@
             </MenuFlyout>
           </SplitButton.Flyout>
         </SplitButton>
-        <Border Width="1" Height="25" Background="#526174" Margin="5,0" />
-        <TextBlock Text="Add object" VerticalAlignment="Center" Foreground="#9FB0C4" />
-        <local:SearchableDropDown x:Name="CatalogList" Width="285" />
-        <Button Content="Add" Click="AddCatalog_Click" />
-        <Border Width="1" Height="25" Background="#526174" Margin="5,0" />
-        <ToggleButton x:Name="PropertiesToggle" Content="Properties" Click="PropertiesToggle_Click" />
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
+        <Button Content="Clear level" Click="ClearLevel_Click" />
         <TextBlock Text="Ctrl + wheel: zoom" VerticalAlignment="Center" Foreground="#718399" Margin="8,0,0,0" />
       </StackPanel>
     </Border>
 
     <SplitView Grid.Row="2"
                x:Name="WorkspaceSplitView"
-               DisplayMode="Overlay"
+               DisplayMode="Inline"
                PanePlacement="Right"
-               OpenPaneLength="320"
+               OpenPaneLength="360"
                CompactPaneLength="0"
-               IsPaneOpen="False"
-               PaneClosing="WorkspaceSplitView_PaneClosing" PaneClosed="WorkspaceSplitView_PaneClosed">
+               IsPaneOpen="True">
       <SplitView.Pane>
-        <Border Background="#111923" BorderBrush="#31445A" BorderThickness="1,0,0,0" Padding="16">
+        <TabControl x:Name="SidebarTabs" SelectedIndex="0" Background="#111923" BorderBrush="#31445A" BorderThickness="1,0,0,0">
+          <TabItem Header="Properties">
+        <Border Background="#111923" Padding="16">
           <ScrollViewer>
             <StackPanel>
               <TextBlock Classes="section" Text="Selection" Margin="0,0,0,5" />
@@ -116,6 +112,64 @@
             </StackPanel>
           </ScrollViewer>
         </Border>
+          </TabItem>
+          <TabItem Header="Items">
+            <Border Background="#111923" Padding="2">
+              <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
+                <TextBox x:Name="CatalogSearchBox" PlaceholderText="Search objects and enemies" TextChanged="CatalogFilterChanged" />
+                <ComboBox x:Name="CatalogTypeBox" Grid.Row="1" SelectedIndex="0" SelectionChanged="CatalogFilterChanged">
+                  <ComboBoxItem Content="All items" />
+                  <ComboBoxItem Content="Objects" />
+                  <ComboBoxItem Content="Enemies" />
+                </ComboBox>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
+                  <ToggleButton x:Name="CatalogGridToggle" Content="Grid" IsChecked="True" Click="CatalogViewChanged" />
+                  <ToggleButton x:Name="CatalogListToggle" Content="List" Click="CatalogViewChanged" />
+                  <TextBlock Text="Tile size" VerticalAlignment="Center" Margin="8,0,0,0" />
+                  <Slider x:Name="CatalogTileSizeSlider" Minimum="64" Maximum="128" Value="84" Width="95" />
+                </StackPanel>
+                <TextBlock x:Name="CatalogPreviewStatus" Grid.Row="3" IsVisible="False" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="11" />
+                <ScrollViewer Grid.Row="4">
+                  <Grid>
+                    <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged">
+                      <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                      <ListBox.ItemTemplate><DataTemplate>
+                        <Border Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
+                          <Grid>
+                            <local:CatalogPreview Preview="{Binding Preview}" />
+                            <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                    <ListBox x:Name="CatalogListView" IsVisible="False" SelectionChanged="CatalogSelectionChanged">
+                      <ListBox.ItemTemplate><DataTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="10" Margin="4"><TextBlock Text="{Binding PreviewGlyph}" Width="28" FontSize="20" Foreground="#9FD9FF"/><TextBlock Text="{Binding Display}" TextWrapping="Wrap" /></StackPanel>
+                      </DataTemplate></ListBox.ItemTemplate>
+                    </ListBox>
+                  </Grid>
+                </ScrollViewer>
+              </Grid>
+            </Border>
+          </TabItem>
+          <TabItem Header="Recent">
+            <Border Background="#111923" Padding="2">
+              <ScrollViewer>
+                <ListBox x:Name="RecentGrid" SelectionChanged="CatalogSelectionChanged">
+                  <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                  <ListBox.ItemTemplate><DataTemplate>
+                    <Border Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
+                      <Grid>
+                        <local:CatalogPreview Preview="{Binding Preview}" />
+                        <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate></ListBox.ItemTemplate>
+                </ListBox>
+              </ScrollViewer>
+            </Border>
+          </TabItem>
+        </TabControl>
       </SplitView.Pane>
 
       <Border Background="#0D141D">
@@ -124,6 +178,11 @@
             <local:LevelCanvas x:Name="EditorCanvas" />
           </ScrollViewer>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Spacing="6">
+            <Button x:Name="DesignerNotice" IsVisible="False" Padding="13,7"
+                    Background="#6F5315" BorderBrush="#FFD36A" BorderThickness="1"
+                    Click="DesignerNotice_Click">
+              <TextBlock x:Name="DesignerNoticeText" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap" MaxWidth="520" />
+            </Button>
             <Button x:Name="SafetyBanner" IsVisible="False" Padding="13,7"
                     Background="#A92B1E" BorderBrush="#FFB4A8" BorderThickness="1"
                     Click="SafetyBanner_Click">
@@ -139,11 +198,20 @@
     </SplitView>
 
     <Border Grid.Row="3" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,1,0,0" Padding="10,6">
-      <TextBlock x:Name="RomStatusText" Text="No ROM loaded" TextWrapping="Wrap" Foreground="#9FB0C4" />
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+        <TextBlock x:Name="RomStatusText" Text="No ROM loaded" TextWrapping="Wrap" Foreground="#9FB0C4" />
+        <TextBlock x:Name="ByteBudgetText" Grid.Column="1" VerticalAlignment="Center" Foreground="#9FB0C4" />
+      </Grid>
     </Border>
 
-    <Expander x:Name="DiagnosticsPanel" Grid.Row="4" Header="Diagnostics" IsExpanded="False" Background="#101720">
-      <ListBox x:Name="DiagnosticsList" MaxWidth="900" HorizontalAlignment="Left">
+    <Expander x:Name="DiagnosticsPanel" Grid.Row="4" IsExpanded="False" Background="#101720" MaxHeight="180">
+      <Expander.Header>
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <TextBlock Text="Diagnostics" />
+          <TextBlock x:Name="DiagnosticsCountText" Foreground="#9FB0C4" />
+        </StackPanel>
+      </Expander.Header>
+      <ListBox x:Name="DiagnosticsList" Height="150" MaxWidth="900" HorizontalAlignment="Left" ScrollViewer.VerticalScrollBarVisibility="Auto">
         <ListBox.ItemTemplate>
           <DataTemplate>
             <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="860" Margin="3,2" />

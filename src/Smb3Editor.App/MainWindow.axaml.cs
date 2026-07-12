@@ -3,6 +3,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using System.Collections.ObjectModel;
 using Smb3Editor.Core;
 
 namespace Smb3Editor.App;
@@ -18,14 +19,19 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _autosaveTimer;
     private readonly List<Diagnostic> _diagnostics = [];
     private IReadOnlyList<Diagnostic> _activeRenderDiagnostics = [];
-    private readonly List<CatalogEntry> _catalog;
+    private readonly List<CatalogEntry> _catalog = [];
+    private readonly ObservableCollection<CatalogEntry> _recentCatalog = [];
+    private readonly Dictionary<string, CatalogPreviewData?> _catalogPreviewCache = [];
+    private readonly object _catalogPreviewCacheLock = new();
+    private CancellationTokenSource? _catalogPreviewCancellation;
+    private CatalogEntry? _activeCatalogEntry;
     private RomImage? _rom;
     private ProjectDocumentV2? _project;
     private LevelDocument? _document;
     private string? _projectPath;
     private AppSettingsV1 _appSettings = new();
     private bool _refreshingInspector;
-    private bool _lastPointerWasInsidePropertiesPane;
+    private bool _refreshingCatalog;
     private bool _paletteObjectsEditing;
     private byte[] _editingPaletteColors = new byte[16];
     private PaletteEditorWindow? _paletteEditor;
@@ -39,14 +45,22 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
-        AddHandler(PointerPressedEvent, MainWindow_PointerPressed, RoutingStrategies.Tunnel);
+        if (SidebarTabs.Items.Count >= 2)
+        {
+            var properties = SidebarTabs.Items[0];
+            SidebarTabs.Items.RemoveAt(0);
+            SidebarTabs.Items.Add(properties);
+        }
         EditorCanvas.EditCommitted += EditorCanvas_EditCommitted;
         EditorCanvas.ActiveRenderDiagnosticsChanged += SetActiveRenderDiagnostics;
+        EditorCanvas.ActionFeedbackAvailable += PresentEditorFeedback;
         EditorCanvas.ZoomRequested += EditorCanvas_ZoomRequested;
         EditorCanvas.PanRequested += EditorCanvas_PanRequested;
+        EditorCanvas.CatalogPlacementRequested += PlaceCatalogAt;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
-        _catalog = BuildCatalog(1);
-        CatalogList.ItemsSource = _catalog;
+        _catalog.AddRange(BuildCatalog(1));
+        ApplyCatalogFilter();
+        RecentGrid.ItemsSource = _recentCatalog;
         _autosaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
         _autosaveTimer.Tick += AutosaveTimer_Tick;
         AddDiagnostics([Diagnostics.Info("READY", "Open a verified US PRG0 or PRG1 ROM to begin.")]);
@@ -326,14 +340,17 @@ public sealed partial class MainWindow : Window
 
     private async void PlayTest_Click(object? sender, RoutedEventArgs e)
     {
+        RomStatusText.Text = "Preparing Play ROM...";
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
+            ShowPlayFailure("Play ROM needs a configured emulator.");
             return;
         }
         var artifact = CompileCurrentProject();
         if (!artifact.IsSuccess)
         {
+            ShowPlayFailure("Play ROM is blocked — open Diagnostics for the exact reason.");
             return;
         }
 
@@ -345,31 +362,39 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(written.Diagnostics);
         if (!written.IsSuccess)
         {
+            ShowPlayFailure("Could not write the temporary Play ROM.");
             return;
         }
 
         var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
             .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        AddDiagnostics(_emulatorLauncher.Launch(new EmulatorConfiguration(emulatorPath, arguments), romPath).Diagnostics);
+        var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(emulatorPath, arguments), romPath);
+        AddDiagnostics(launched.Diagnostics);
+        if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
+        else RomStatusText.Text = "Launching Play ROM...";
     }
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
     {
+        RomStatusText.Text = "Preparing Play Level...";
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
+            ShowPlayFailure("Play Level needs a configured emulator.");
             return;
         }
 
         if (_rom is null || _document is null || !_rom.Profile.Levels.TryGetValue(_document.AreaId, out var selectedLevel))
         {
             AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_NONE", "Select a verified level before using Play Level.")]);
+            ShowPlayFailure("Select a verified level before Play Level.");
             return;
         }
 
         var compiled = CompileCurrentProject();
         if (!compiled.IsSuccess)
         {
+            ShowPlayFailure("Play Level is blocked — open Diagnostics for the exact reason.");
             return;
         }
 
@@ -377,6 +402,7 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(directTest.Diagnostics);
         if (!directTest.IsSuccess)
         {
+            ShowPlayFailure("Play Level could not prepare its temporary test ROM.");
             return;
         }
 
@@ -387,6 +413,7 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(written.Diagnostics);
         if (!written.IsSuccess)
         {
+            ShowPlayFailure("Could not write the temporary Play Level ROM.");
             return;
         }
 
@@ -396,19 +423,30 @@ public sealed partial class MainWindow : Window
             AddDiagnostics(verification.Diagnostics);
             if (!verification.IsSuccess)
             {
+                ShowPlayFailure("The temporary Play Level ROM did not verify.");
                 return;
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_READBACK", $"The temporary level test could not be verified: {ex.Message}")]);
+            ShowPlayFailure("The temporary Play Level ROM could not be verified.");
             return;
         }
 
         RomStatusText.Text = $"Launching {selectedLevel.DisplayName} as Small Mario";
         var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
             .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        AddDiagnostics(_emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath).Diagnostics);
+        var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath);
+        AddDiagnostics(launched.Diagnostics);
+        if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
+    }
+
+    private void ShowPlayFailure(string message)
+    {
+        RomStatusText.Text = message;
+        DesignerNoticeText.Text = message;
+        DesignerNotice.IsVisible = true;
     }
 
     private static void TryCleanDirectPlaytests(string directory)
@@ -625,28 +663,6 @@ public sealed partial class MainWindow : Window
         return false;
     }
 
-    private void PropertiesToggle_Click(object? sender, RoutedEventArgs e) =>
-        WorkspaceSplitView.IsPaneOpen = PropertiesToggle.IsChecked == true;
-
-    private void WorkspaceSplitView_PaneClosing(object? sender, CancelRoutedEventArgs e)
-    {
-        if (_lastPointerWasInsidePropertiesPane)
-        {
-            e.Cancel = true;
-        }
-    }
-
-    private void WorkspaceSplitView_PaneClosed(object? sender, RoutedEventArgs e) => PropertiesToggle.IsChecked = false;
-
-    private void MainWindow_PointerPressed(object? sender, PointerPressedEventArgs e)
-    {
-        var point = e.GetPosition(WorkspaceSplitView);
-        _lastPointerWasInsidePropertiesPane = WorkspaceSplitView.IsPaneOpen &&
-                                              point.X >= WorkspaceSplitView.Bounds.Width - WorkspaceSplitView.OpenPaneLength &&
-                                              point.X <= WorkspaceSplitView.Bounds.Width &&
-                                              point.Y >= 0 && point.Y <= WorkspaceSplitView.Bounds.Height;
-    }
-
     private void HeaderValueChanged(object? sender, NumericUpDownValueChangedEventArgs e)
         => ApplyHeaderValues();
 
@@ -679,19 +695,48 @@ public sealed partial class MainWindow : Window
 
     private void AddCatalog_Click(object? sender, RoutedEventArgs e)
     {
-        if (CatalogList.SelectedItem is not CatalogEntry entry)
-        {
-            return;
-        }
+        PlaceCatalogAt(1, 1);
+    }
 
-        if (entry.IsEnemy)
-        {
-            EditorCanvas.AddEnemy((byte)entry.Id);
-        }
-        else
-        {
-            EditorCanvas.AddFixedGenerator(entry.Id);
-        }
+    private void PlaceCatalogAt(int x, int y)
+    {
+        if (_activeCatalogEntry is not { } entry) return;
+        if (entry.IsEnemy) EditorCanvas.AddEnemy((byte)entry.Id, x, y);
+        else if (entry.IsVariable) EditorCanvas.AddVariableGenerator(entry.Id, x, y);
+        else EditorCanvas.AddFixedGenerator(entry.Id, x, y);
+        RememberRecent(entry);
+    }
+
+    private void CatalogFilterChanged(object? sender, TextChangedEventArgs e) => ApplyCatalogFilter();
+    private void CatalogFilterChanged(object? sender, SelectionChangedEventArgs e) => ApplyCatalogFilter();
+
+    private void CatalogSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_refreshingCatalog || sender is not ListBox { SelectedItem: CatalogEntry entry }) return;
+        _activeCatalogEntry = entry;
+        _refreshingCatalog = true;
+        CatalogGrid.SelectedItem = entry;
+        CatalogListView.SelectedItem = entry;
+        RecentGrid.SelectedItem = entry;
+        _refreshingCatalog = false;
+    }
+
+    private void RememberRecent(CatalogEntry entry)
+    {
+        foreach (var existing in _recentCatalog.Where(item => item.IsEnemy == entry.IsEnemy && item.IsVariable == entry.IsVariable && item.Id == entry.Id).ToArray())
+            _recentCatalog.Remove(existing);
+        _recentCatalog.Insert(0, entry);
+        while (_recentCatalog.Count > 24) _recentCatalog.RemoveAt(_recentCatalog.Count - 1);
+        RecentGrid.SelectedItem = null;
+    }
+
+    private void CatalogViewChanged(object? sender, RoutedEventArgs e)
+    {
+        var grid = ReferenceEquals(sender, CatalogGridToggle) ? CatalogGridToggle.IsChecked != false : CatalogListToggle.IsChecked == false;
+        CatalogGridToggle.IsChecked = grid;
+        CatalogListToggle.IsChecked = !grid;
+        CatalogGrid.IsVisible = grid;
+        CatalogListView.IsVisible = !grid;
     }
 
     private void Undo_Click(object? sender, RoutedEventArgs e) => Undo();
@@ -728,6 +773,27 @@ public sealed partial class MainWindow : Window
         MarkProjectChanged();
         RefreshInspector();
     }
+
+    private void PresentEditorFeedback(EditorActionFeedback feedback)
+    {
+        var diagnostic = feedback.Severity switch
+        {
+            DiagnosticSeverity.Error => Diagnostics.Error("EDITOR_ACTION", feedback.Details),
+            DiagnosticSeverity.Warning => Diagnostics.Warning("EDITOR_ACTION", feedback.Details),
+            _ => Diagnostics.Info("EDITOR_ACTION", feedback.Details)
+        };
+        AddDiagnostics([diagnostic]);
+        RomStatusText.Text = feedback.Summary;
+        if (feedback.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
+        {
+            DesignerNoticeText.Text = $"{feedback.Summary}: {feedback.Details}";
+            DesignerNotice.IsVisible = true;
+        }
+    }
+
+    private void DesignerNotice_Click(object? sender, RoutedEventArgs e) => DiagnosticsPanel.IsExpanded = true;
+
+    private void ClearLevel_Click(object? sender, RoutedEventArgs e) => EditorCanvas.ClearLevel();
 
     private void SetActiveRenderDiagnostics(IReadOnlyList<Diagnostic> diagnostics)
     {
@@ -934,6 +1000,9 @@ public sealed partial class MainWindow : Window
     private void SetDocument(LevelDocument document, bool clearHistory)
     {
         _document = document;
+        EditorCanvas.FourByteGeneratorIds = _rom?.Profile.Levels.TryGetValue(document.AreaId, out var location) == true
+            ? location.FourByteGeneratorIds
+            : new HashSet<int>();
         EditorCanvas.Document = document;
         EditorCanvas.PaletteOverrides = _project?.PaletteOverrides ?? [];
         RefreshCatalog(document.Tileset);
@@ -1018,9 +1087,20 @@ public sealed partial class MainWindow : Window
         _refreshingInspector = false;
         var layout = Smb3LevelCodec.EncodeLayout(_document);
         var enemies = Smb3LevelCodec.EncodeEnemies(_document);
+        UpdateByteBudget(layout.Value?.Length ?? 0, _document.OriginalLayoutLength, enemies.Value?.Length ?? 0, _document.OriginalEnemyLength);
         SpaceText.Text = $"Layout: {layout.Value?.Length ?? 0} / {_document.OriginalLayoutLength} bytes\n" +
                          $"Enemies: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
                          $"Used by: {string.Join(", ", _document.UsedBy)}";
+    }
+
+    private void UpdateByteBudget(int layoutUsed, int layoutCapacity, int enemyUsed, int enemyCapacity)
+    {
+        var layoutLeft = layoutCapacity - layoutUsed;
+        var enemyLeft = enemyCapacity - enemyUsed;
+        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Enemies {enemyUsed}/{enemyCapacity}";
+        ByteBudgetText.Foreground = layoutLeft < 0 || enemyLeft < 0
+            ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FF6B6B"))
+            : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#9FB0C4"));
     }
 
     private void AddDiagnostics(IEnumerable<Diagnostic> diagnostics)
@@ -1040,28 +1120,53 @@ public sealed partial class MainWindow : Window
 
     private void RefreshDiagnosticsList()
     {
-        DiagnosticsList.ItemsSource = _diagnostics
+        var all = _diagnostics
             .Concat(_activeRenderDiagnostics)
             .AsEnumerable()
             .Reverse()
-            .Select(static diagnostic => diagnostic.ToString())
             .ToArray();
+        DiagnosticsList.ItemsSource = all.Select(static diagnostic => diagnostic.ToString()).ToArray();
+        var warnings = all.Count(item => item.Severity == DiagnosticSeverity.Warning);
+        var errors = all.Count(item => item.Severity == DiagnosticSeverity.Error);
+        DiagnosticsCountText.Text = errors > 0 ? $"({errors} error{(errors == 1 ? string.Empty : "s")})" :
+            warnings > 0 ? $"({warnings} warning{(warnings == 1 ? string.Empty : "s")})" : string.Empty;
     }
 
     private void RefreshCatalog(int tileset)
     {
+        _catalogPreviewCancellation?.Cancel();
         _catalog.Clear();
         _catalog.AddRange(BuildCatalog(tileset));
+        var cached = _rom is null || _document is null
+            ? new Dictionary<(bool Enemy, int Id), CatalogPreviewData?>()
+            : new Dictionary<(bool Enemy, int Id), CatalogPreviewData?>(CatalogPreviewCacheStore.Load(_rom.Sha1, tileset, _document.Header.ObjectPalette));
+        for (var index = 0; index < _catalog.Count; index++)
+        {
+            var entry = _catalog[index];
+            if (cached.TryGetValue((entry.IsEnemy, CachePreviewId(entry)), out var preview)) _catalog[index] = entry with { Preview = preview };
+        }
         ApplyCatalogFilter();
+        QueueCatalogPreviews(_catalog.Where(entry => !cached.ContainsKey((entry.IsEnemy, CachePreviewId(entry)))).ToArray(), tileset, cached);
     }
 
     private void ApplyCatalogFilter()
     {
-        CatalogList.ItemsSource = _catalog.ToArray();
-        if (_catalog.Count > 0 && CatalogList.SelectedItem is null)
-        {
-            CatalogList.SelectedItem = _catalog[0];
-        }
+        if (CatalogGrid is null || CatalogListView is null) return;
+        var query = CatalogSearchBox?.Text?.Trim() ?? string.Empty;
+        var type = CatalogTypeBox?.SelectedIndex ?? 0;
+        var filtered = _catalog
+            .Where(item => (type == 0 || (type == 1 && !item.IsEnemy) || (type == 2 && item.IsEnemy)) &&
+                           (string.IsNullOrWhiteSpace(query) || item.Display.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            item.Id.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                            $"${item.Id:X2}".Contains(query, StringComparison.OrdinalIgnoreCase)))
+            .ToArray();
+        _refreshingCatalog = true;
+        CatalogGrid.ItemsSource = filtered;
+        CatalogListView.ItemsSource = filtered;
+        if (_activeCatalogEntry is null || !filtered.Contains(_activeCatalogEntry)) _activeCatalogEntry = filtered.FirstOrDefault();
+        CatalogGrid.SelectedItem = _activeCatalogEntry;
+        CatalogListView.SelectedItem = _activeCatalogEntry;
+        _refreshingCatalog = false;
     }
 
     private void SaveGlobalEmulatorSettings()
@@ -1076,23 +1181,145 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
     }
 
-    private static List<CatalogEntry> BuildCatalog(int tileset)
+    private List<CatalogEntry> BuildCatalog(int tileset)
     {
         var items = ObjectCatalogNames.ForTileset(tileset)
-            .Select(item => new CatalogEntry(false, item.Id, $"{item.Name} (${item.Id:X2}, {item.Id})"))
+            .Select(item => new CatalogEntry(false, false, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})"))
             .ToList();
+        items.AddRange(ObjectCatalogNames.VariableForTileset(tileset)
+            .Select(item => new CatalogEntry(false, true, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})")));
         items.AddRange(Smb3LevelRenderer.EnemyCatalog
             .OrderBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new CatalogEntry(true, item.Key,
+            .Select(item => new CatalogEntry(true, false, item.Key, item.Value,
                 $"{item.Value} (${item.Key:X2}, {item.Key})")));
         return items;
+    }
+
+    private void QueueCatalogPreviews(IReadOnlyList<CatalogEntry> entries, int tileset, Dictionary<(bool Enemy, int Id), CatalogPreviewData?> cached)
+    {
+        if (_rom is null || _document is null) return;
+        if (entries.Count == 0)
+        {
+            CatalogPreviewStatus.IsVisible = false;
+            return;
+        }
+        var cancellation = _catalogPreviewCancellation = new CancellationTokenSource();
+        var rom = _rom;
+        var document = _document;
+        CatalogPreviewStatus.Text = $"Preparing item previews from your ROM (0/{entries.Count})…";
+        CatalogPreviewStatus.IsVisible = true;
+        _ = Task.Run(async () =>
+        {
+            var completed = 0;
+            foreach (var batch in entries.Chunk(1))
+            {
+                if (cancellation.IsCancellationRequested) return;
+                var rendered = batch.Select(entry => (entry, Preview: GetCatalogPreview(entry, tileset, rom, document))).ToArray();
+                foreach (var (entry, preview) in rendered)
+                    cached[(entry.IsEnemy, CachePreviewId(entry))] = preview;
+                completed += rendered.Length;
+                Dispatcher.UIThread.Post(() =>
+                {
+                    if (cancellation.IsCancellationRequested) return;
+                    foreach (var (entry, preview) in rendered)
+                    {
+                        var index = _catalog.FindIndex(item => item.IsEnemy == entry.IsEnemy && item.IsVariable == entry.IsVariable && item.Id == entry.Id);
+                        if (index >= 0) _catalog[index] = entry with { Preview = preview };
+                    }
+                    ApplyCatalogFilter();
+                    CatalogPreviewStatus.Text = $"Preparing item previews from your ROM ({completed}/{entries.Count})…";
+                });
+                await Task.Delay(150, cancellation.Token).ConfigureAwait(false);
+            }
+            if (cancellation.IsCancellationRequested) return;
+            CatalogPreviewCacheStore.Save(rom.Sha1, tileset, document.Header.ObjectPalette, cached);
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (cancellation.IsCancellationRequested) return;
+                CatalogPreviewStatus.Text = "Item previews are ready.";
+            });
+        }, cancellation.Token);
+    }
+
+    private CatalogPreviewData? GetCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document)
+    {
+        var key = $"{rom.Sha1}:{tileset}:{document.Header.ObjectPalette}:{entry.IsEnemy}:{entry.IsVariable}:{entry.Id}";
+        lock (_catalogPreviewCacheLock)
+        {
+            if (_catalogPreviewCache.TryGetValue(key, out var cached)) return cached;
+        }
+        var preview = BuildCatalogPreview(entry, tileset, rom, document);
+        lock (_catalogPreviewCacheLock) _catalogPreviewCache[key] = preview;
+        return preview;
+    }
+
+    private static int CachePreviewId(CatalogEntry entry) => entry.Id + (entry.IsVariable ? 0x1000 : 0);
+
+    private static CatalogPreviewData? BuildCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document)
+    {
+        try
+        {
+            var sample = document with
+            {
+                Tileset = tileset,
+                Elements = entry.IsEnemy ? [] : [CreatePreviewElement(entry, document)],
+                Enemies = entry.IsEnemy ? [new EnemyElement(0, (byte)entry.Id, 1, 1)] : []
+            };
+            var rendered = new Smb3LevelRenderer().Render(rom, sample);
+            if (!rendered.IsSuccess) return null;
+            var snapshot = rendered.Value!;
+            if (entry.IsEnemy && snapshot.EnemySprites.TryGetValue((byte)entry.Id, out var sprite))
+                return ToThumbnail(sprite.PixelWidth, sprite.PixelHeight, sprite.ArgbPixels);
+            if (!snapshot.ElementBounds.TryGetValue(0, out var bounds)) return null;
+            var left = Math.Max(0, bounds.Left * 16);
+            var top = Math.Max(0, bounds.Top * 16);
+            var width = Math.Min(snapshot.PixelWidth - left, Math.Max(1, bounds.Width * 16));
+            var height = Math.Min(snapshot.PixelHeight - top, Math.Max(1, bounds.Height * 16));
+            if (width <= 0 || height <= 0) return null;
+            var pixels = new uint[width * height];
+            for (var y = 0; y < height; y++)
+                snapshot.ArgbPixels.Skip((top + y) * snapshot.PixelWidth + left).Take(width).ToArray().CopyTo(pixels, y * width);
+            return ToThumbnail(width, height, pixels);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
+
+    private static LevelElement CreatePreviewElement(CatalogEntry entry, LevelDocument document)
+    {
+        if (!entry.IsVariable)
+            return new LevelElement(0, LevelElementKind.FixedGenerator, entry.Id, 1, 1,
+                (byte)(entry.Id & 0x0F), null, (byte)((entry.Id & 0x70) << 1), 1, 1, 1);
+        var encoded = entry.Id + 1;
+        var firstHigh = (encoded / 15) << 5;
+        var first = document.Header.IsVertical ? (byte)((firstHigh & 0xF0) | 1) : (byte)((firstHigh & 0xE0) | 1);
+        var shape = (byte)(((encoded % 15) << 4) | 1);
+        return new LevelElement(0, LevelElementKind.VariableGenerator, entry.Id, 1, 1, shape, null, first, 1, 1, 1);
+    }
+
+    private static CatalogPreviewData ToThumbnail(int width, int height, IReadOnlyList<uint> pixels)
+    {
+        const int maximumSide = 48;
+        if (width <= maximumSide && height <= maximumSide) return new CatalogPreviewData(width, height, pixels.ToArray());
+        var scale = Math.Min((double)maximumSide / width, (double)maximumSide / height);
+        var targetWidth = Math.Max(1, (int)Math.Round(width * scale));
+        var targetHeight = Math.Max(1, (int)Math.Round(height * scale));
+        var thumbnail = new uint[targetWidth * targetHeight];
+        for (var y = 0; y < targetHeight; y++)
+        for (var x = 0; x < targetWidth; x++)
+            thumbnail[(y * targetWidth) + x] = pixels[(Math.Min(height - 1, (int)(y / scale)) * width) + Math.Min(width - 1, (int)(x / scale))];
+        return new CatalogPreviewData(targetWidth, targetHeight, thumbnail);
     }
 
     private static bool PathsEqual(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
-    private sealed record CatalogEntry(bool IsEnemy, int Id, string Display)
+    private sealed record CatalogEntry(bool IsEnemy, bool IsVariable, int Id, string ShortName, string Display, CatalogPreviewData? Preview = null)
     {
+        public bool HasNoPreview => Preview is null;
+        public string PreviewGlyph => IsEnemy ? "●" : "■";
         public override string ToString() => Display;
     }
 

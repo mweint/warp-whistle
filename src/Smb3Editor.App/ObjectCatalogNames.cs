@@ -277,6 +277,13 @@ internal static class ObjectCatalogNames
             .ToArray();
     }
 
+    public static IReadOnlyList<NamedLevelObject> VariableForTileset(int tileset) => tileset switch
+    {
+        1 => PlainsVariableObjects.Select((name, id) => new NamedLevelObject(id, name)).ToArray(),
+        2 => FortressVariableObjects.Select(item => new NamedLevelObject(item.Key, item.Value)).OrderBy(static item => item.Id).ToArray(),
+        _ => []
+    };
+
     public static string Describe(int tileset, LevelElement element)
     {
         if (element.Kind == LevelElementKind.Junction)
