@@ -30,7 +30,7 @@ public sealed record EnemySpritePreview(
 
 public interface ISmb3LevelRenderer
 {
-    OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null);
+    OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null, IReadOnlyList<PaletteOverride>? paletteOverrides = null);
 }
 
 /// <summary>
@@ -159,7 +159,7 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         return OperationResult<byte[]>.Success(bank.Slice(paletteOffset, 16).ToArray());
     }
 
-    public OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null)
+    public OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null, IReadOnlyList<PaletteOverride>? paletteOverrides = null)
     {
         try
         {
@@ -249,13 +249,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
             var width = document.Header.IsVertical ? 16 : document.Header.ScreenCount * 16;
             var height = document.Header.IsVertical ? document.Header.ScreenCount * 15 : 27;
             var metatiles = ReadMetatiles(cpu.Memory, document.Header.IsVertical, width, height);
-            var pixels = ComposePixels(rom, document, metatiles, width, height);
+            var pixels = ComposePixels(rom, document, metatiles, width, height, paletteOverrides);
             if (!pixels.IsSuccess)
             {
                 return OperationResult<LevelRenderSnapshot>.Failure(pixels.Diagnostics.ToArray());
             }
 
-            var enemySprites = ComposeEnemySprites(rom, document);
+            var enemySprites = ComposeEnemySprites(rom, document, paletteOverrides);
             var elementBounds = BuildElementBounds(document, writesByElement, width, height, excludedElementIndex);
             var elementAnchors = BuildElementAnchors(document, writesByElement, width, height, excludedElementIndex);
             return OperationResult<LevelRenderSnapshot>.Success(
@@ -311,11 +311,12 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         LevelDocument document,
         IReadOnlyList<byte> metatiles,
         int width,
-        int height)
+        int height,
+        IReadOnlyList<PaletteOverride>? paletteOverrides)
     {
         var bank = LayoutBankByTileset[document.Tileset];
         var metatileLayouts = rom.Prg.Slice(bank * PrgBankSize, 0x400);
-        var palette = ReadBackgroundPalette(rom, document);
+        var palette = ReadBackgroundPalette(rom, document, paletteOverrides);
         if (!palette.IsSuccess)
         {
             return OperationResult<uint[]>.Failure(palette.Diagnostics.ToArray());
@@ -388,8 +389,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         return OperationResult<uint[]>.Success(output);
     }
 
-    private static OperationResult<byte[]> ReadBackgroundPalette(RomImage rom, LevelDocument document)
+    private static OperationResult<byte[]> ReadBackgroundPalette(RomImage rom, LevelDocument document, IReadOnlyList<PaletteOverride>? paletteOverrides = null)
     {
+        var overridden = paletteOverrides?.LastOrDefault(item => item.Tileset == document.Tileset && !item.Objects && item.Slot == document.Header.BackgroundPalette);
+        if (overridden?.Colors.Count == 16)
+        {
+            return OperationResult<byte[]>.Success(overridden.Colors.Select(static color => (byte)(color & 0x3F)).ToArray());
+        }
         const int paletteBank = 27;
         const int palettePointerTableOffset = 0x17D2; // Runtime $B7D2 in PRG bank 27.
         var bank = rom.Prg.Slice(paletteBank * PrgBankSize, PrgBankSize);
@@ -490,9 +496,9 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         return ((horizontalScreen * 16) + (horizontalWithinScreen % 16), horizontalWithinScreen / 16);
     }
 
-    private static IReadOnlyDictionary<byte, EnemySpritePreview> ComposeEnemySprites(RomImage rom, LevelDocument document)
+    private static IReadOnlyDictionary<byte, EnemySpritePreview> ComposeEnemySprites(RomImage rom, LevelDocument document, IReadOnlyList<PaletteOverride>? paletteOverrides)
     {
-        var palette = ReadObjectPalette(rom, document);
+        var palette = ReadObjectPalette(rom, document, paletteOverrides);
         var previews = new Dictionary<byte, EnemySpritePreview>();
         foreach (var id in document.Enemies.Select(static enemy => enemy.Id).Distinct())
         {
@@ -557,8 +563,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         return previews;
     }
 
-    private static byte[] ReadObjectPalette(RomImage rom, LevelDocument document)
+    private static byte[] ReadObjectPalette(RomImage rom, LevelDocument document, IReadOnlyList<PaletteOverride>? paletteOverrides = null)
     {
+        var overridden = paletteOverrides?.LastOrDefault(item => item.Tileset == document.Tileset && item.Objects && item.Slot == document.Header.ObjectPalette);
+        if (overridden?.Colors.Count == 16)
+        {
+            return overridden.Colors.Select(static color => (byte)(color & 0x3F)).ToArray();
+        }
         const int paletteBank = 27;
         const int palettePointerTableOffset = 0x17D2;
         var bank = rom.Prg.Slice(paletteBank * PrgBankSize, PrgBankSize);

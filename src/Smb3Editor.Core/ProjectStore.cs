@@ -49,7 +49,11 @@ public static class ProjectStore
             {
                 project = MigrateV1(project, diagnostics);
             }
-            else if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
+            if (project.FormatVersion == 2)
+            {
+                project = MigrateV2(project, diagnostics);
+            }
+            if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
                 return OperationResult<ProjectDocumentV2>.Failure(
                     Diagnostics.Error("PROJECT_VERSION", $"Project format {project.FormatVersion} is not supported."));
@@ -143,8 +147,14 @@ public static class ProjectStore
 
         return legacy with
         {
-            FormatVersion = ProjectDocumentV2.CurrentFormatVersion,
+            FormatVersion = 2,
             ModifiedAreas = areas
         };
+    }
+
+    private static ProjectDocumentV2 MigrateV2(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 2 to format 3 with project-only palette names."));
+        return legacy with { FormatVersion = 3, PaletteSlotLabels = [] };
     }
 }

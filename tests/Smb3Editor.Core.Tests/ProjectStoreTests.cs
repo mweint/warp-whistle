@@ -9,7 +9,7 @@ public sealed class ProjectStoreTests
     {
         var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-{Guid.NewGuid():N}.smb3proj");
         var project = new ProjectDocumentV2(
-            2,
+            ProjectDocumentV2.CurrentFormatVersion,
             new ProjectSource("us-prg1", "abc", "def", "C:/owned/game.nes"),
             new Dictionary<string, LevelDocument>(),
             new EditorState(Zoom: 1.1));
@@ -33,7 +33,7 @@ public sealed class ProjectStoreTests
     }
 
     [Fact]
-    public void VersionOneProjectMigratesPackedCoordinatesToVersionTwo()
+    public void VersionOneProjectMigratesPackedCoordinatesAndPaletteNamesToCurrentVersion()
     {
         var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-v1-{Guid.NewGuid():N}.smb3proj");
         var horizontal = CreateDocument("horizontal", vertical: false) with
@@ -67,7 +67,8 @@ public sealed class ProjectStoreTests
             var loaded = ProjectStore.Load(path);
 
             Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
-            Assert.Equal(2, loaded.Value!.FormatVersion);
+            Assert.Equal(ProjectDocumentV2.CurrentFormatVersion, loaded.Value!.FormatVersion);
+            Assert.Empty(loaded.Value.PaletteSlotLabels ?? []);
             Assert.Equal(18, loaded.Value.ModifiedAreas[horizontal.AreaId].Elements[0].Y);
             Assert.Equal(18, loaded.Value.ModifiedAreas[horizontal.AreaId].Elements[0].OriginalY);
             var enemy = loaded.Value.ModifiedAreas[vertical.AreaId].Enemies[0];

@@ -84,12 +84,13 @@
               <NumericUpDown x:Name="ScreenCountBox" Minimum="1" Maximum="16" Increment="1" Margin="0,3,0,10" ValueChanged="HeaderValueChanged" />
               <TextBlock Text="Background palette" />
               <ComboBox x:Name="BackgroundPaletteBox" Margin="0,3,0,10" SelectionChanged="HeaderSelectionChanged">
-                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><ItemsControl ItemsSource="{Binding Colors}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Border Width="10" Height="18" Background="{Binding}"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></DataTemplate></ComboBox.ItemTemplate>
+                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
               </ComboBox>
               <TextBlock Text="Object palette" />
               <ComboBox x:Name="ObjectPaletteBox" Margin="0,3,0,10" SelectionChanged="HeaderSelectionChanged">
-                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><ItemsControl ItemsSource="{Binding Colors}"><ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate><Border Width="10" Height="18" Background="{Binding}"/></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></DataTemplate></ComboBox.ItemTemplate>
+                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
               </ComboBox>
+              <StackPanel IsVisible="False">
               <TextBlock Text="Palette editor" TextWrapping="Wrap" />
               <StackPanel x:Name="PaletteSwatches" Orientation="Horizontal" Margin="0,3,0,5" />
               <StackPanel Orientation="Horizontal" Spacing="5" Margin="0,0,0,12">
@@ -97,6 +98,8 @@
                 <Button x:Name="PaletteHeartButton" Content="♡" Width="34" ToolTip.Tip="Save or remove this palette from the library" Click="TogglePaletteLibrary_Click" />
                 <Button Content="Apply library" Click="ApplyPaletteLibrary_Click" />
               </StackPanel>
+              </StackPanel>
+              <Button Content="Open Palette Editor" Click="OpenPaletteEditor_Click" Margin="0,0,0,12" />
               <TextBlock Text="Music" />
               <ComboBox x:Name="MusicBox" Margin="0,3,0,10" SelectionChanged="HeaderSelectionChanged" />
               <TextBlock Text="Time setting" />

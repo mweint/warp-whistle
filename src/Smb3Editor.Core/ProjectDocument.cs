@@ -16,21 +16,24 @@ public sealed record EditorState(
     string PlayMode = "rom");
 
 public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
+public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, string Name);
 
 public sealed record ProjectDocumentV2(
     int FormatVersion,
     ProjectSource Source,
     IReadOnlyDictionary<string, LevelDocument> ModifiedAreas,
     EditorState EditorState,
-    IReadOnlyList<PaletteOverride>? PaletteOverrides = null)
+    IReadOnlyList<PaletteOverride>? PaletteOverrides = null,
+    IReadOnlyList<PaletteSlotLabel>? PaletteSlotLabels = null)
 {
-    public const int CurrentFormatVersion = 2;
+    public const int CurrentFormatVersion = 3;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
         new ProjectSource(source.Profile.Id, source.Sha1, source.Sha256, source.SourcePath),
         new Dictionary<string, LevelDocument>(StringComparer.Ordinal),
         new EditorState(),
+        [],
         []);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)

@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
     private bool _lastPointerWasInsidePropertiesPane;
     private bool _paletteObjectsEditing;
     private byte[] _editingPaletteColors = new byte[16];
+    private PaletteEditorWindow? _paletteEditor;
     private string _playMode = "rom";
     private int _zoomSequence;
 
@@ -437,11 +438,109 @@ public sealed partial class MainWindow : Window
     private void ApplyPalette_Click(object? sender, RoutedEventArgs e)
     {
         if (_project is null || _document is null || !TryReadPaletteValues(out var colors, out var objects, out var slot)) return;
-        var overrides = (_project.PaletteOverrides ?? []).Where(item => !(item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)).ToList();
-        overrides.Add(new PaletteOverride(_document.Tileset, objects, slot, colors));
-        _project = _project with { PaletteOverrides = overrides };
+        SetPaletteColors(objects, slot, colors);
+    }
+
+    private void OpenPaletteEditor_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_rom is null || _document is null || _project is null)
+        {
+            AddDiagnostics([Diagnostics.Error("PALETTE_NONE", "Open a verified ROM and level before editing palettes.")]);
+            return;
+        }
+
+        if (_paletteEditor is null)
+        {
+            _paletteEditor = new PaletteEditorWindow(GetPaletteSlot, GetStockPaletteSlot, PreviewPaletteDrafts, CommitPaletteDrafts, CancelPaletteDrafts);
+            _paletteEditor.Closed += (_, _) => _paletteEditor = null;
+            _paletteEditor.Show(this);
+        }
+        else
+        {
+            _paletteEditor.RefreshFromHost();
+            _paletteEditor.Activate();
+        }
+    }
+
+    private PaletteSlotInfo? GetPaletteSlot(bool objects, int slot)
+    {
+        if (_rom is null || _document is null || _project is null) return null;
+        var limit = objects ? 4 : 8;
+        if (slot < 0 || slot >= limit) return null;
+        var overrideEntry = (_project.PaletteOverrides ?? []).LastOrDefault(item => item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot);
+        var source = Smb3LevelRenderer.ReadPaletteIndices(_rom, _document, objects, slot);
+        var colors = overrideEntry?.Colors.Count == 16
+            ? overrideEntry.Colors.ToArray()
+            : source.IsSuccess ? source.Value!.ToArray() : new byte[16];
+        var label = (_project.PaletteSlotLabels ?? []).LastOrDefault(item => item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)?.Name;
+        var name = label ?? string.Empty;
+        return new PaletteSlotInfo(objects, slot, name, overrideEntry is not null, colors);
+    }
+
+    private PaletteSlotInfo? GetStockPaletteSlot(bool objects, int slot)
+    {
+        if (_rom is null || _document is null || _project is null) return null;
+        var source = Smb3LevelRenderer.ReadPaletteIndices(_rom, _document, objects, slot);
+        if (!source.IsSuccess) return null;
+        var name = (_project.PaletteSlotLabels ?? []).LastOrDefault(item => item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)?.Name ?? string.Empty;
+        return new PaletteSlotInfo(objects, slot, name, false, source.Value!.ToArray());
+    }
+
+    private void PreviewPaletteDrafts(IReadOnlyList<PaletteSlotInfo> drafts) =>
+        EditorCanvas.PaletteOverrides = BuildPaletteOverrides(drafts);
+
+    private void CancelPaletteDrafts()
+    {
+        EditorCanvas.PaletteOverrides = _project?.PaletteOverrides ?? [];
+        RefreshInspector();
+    }
+
+    private void CommitPaletteDrafts(IReadOnlyList<PaletteSlotInfo> drafts)
+    {
+        if (_project is null || _document is null) return;
+        var keys = drafts.Select(item => (item.Objects, item.Slot)).ToHashSet();
+        var overrides = (_project.PaletteOverrides ?? []).Where(item => item.Tileset != _document.Tileset || !keys.Contains((item.Objects, item.Slot))).ToList();
+        overrides.AddRange(drafts.Where(static item => item.IsModified).Select(item => new PaletteOverride(_document.Tileset, item.Objects, item.Slot, item.Colors.ToArray())));
+        var labels = (_project.PaletteSlotLabels ?? []).Where(item => item.Tileset != _document.Tileset || !keys.Contains((item.Objects, item.Slot))).ToList();
+        labels.AddRange(drafts.Where(item => !string.IsNullOrWhiteSpace(item.Name)).Select(item => new PaletteSlotLabel(_document.Tileset, item.Objects, item.Slot, item.Name)));
+        _project = _project with { PaletteOverrides = overrides, PaletteSlotLabels = labels };
+        EditorCanvas.PaletteOverrides = overrides;
         MarkProjectChanged();
-        AddDiagnostics([Diagnostics.Info("PALETTE_APPLIED", $"Edited {(objects ? "object" : "background")} palette slot {slot} for tileset {_document.Tileset}. Shared levels will use this slot.")]);
+        RefreshInspector();
+    }
+
+    private IReadOnlyList<PaletteOverride> BuildPaletteOverrides(IReadOnlyList<PaletteSlotInfo> drafts)
+    {
+        if (_project is null || _document is null) return [];
+        var keys = drafts.Select(item => (item.Objects, item.Slot)).ToHashSet();
+        return (_project.PaletteOverrides ?? []).Where(item => item.Tileset != _document.Tileset || !keys.Contains((item.Objects, item.Slot)))
+            .Concat(drafts.Where(static item => item.IsModified).Select(item => new PaletteOverride(_document.Tileset, item.Objects, item.Slot, item.Colors.ToArray())))
+            .ToArray();
+    }
+
+    private void SetPaletteColors(bool objects, int slot, IReadOnlyList<byte> colors)
+    {
+        if (_project is null || _document is null || (colors.Count != 0 && colors.Count != 16)) return;
+        var overrides = (_project.PaletteOverrides ?? []).Where(item => !(item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)).ToList();
+        if (colors.Count > 0)
+        {
+            overrides.Add(new PaletteOverride(_document.Tileset, objects, slot, colors.Select(static color => (byte)(color & 0x3F)).ToArray()));
+        }
+        _project = _project with { PaletteOverrides = overrides };
+        EditorCanvas.PaletteOverrides = overrides;
+        MarkProjectChanged();
+        RefreshInspector();
+        _paletteEditor?.RefreshFromHost();
+    }
+
+    private void SetPaletteName(bool objects, int slot, string name)
+    {
+        if (_project is null || _document is null) return;
+        var labels = (_project.PaletteSlotLabels ?? []).Where(item => !(item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)).ToList();
+        if (!string.IsNullOrWhiteSpace(name)) labels.Add(new PaletteSlotLabel(_document.Tileset, objects, slot, name));
+        _project = _project with { PaletteSlotLabels = labels };
+        MarkProjectChanged();
+        RefreshInspector();
     }
 
     private void TogglePaletteLibrary_Click(object? sender, RoutedEventArgs e)
@@ -836,6 +935,7 @@ public sealed partial class MainWindow : Window
     {
         _document = document;
         EditorCanvas.Document = document;
+        EditorCanvas.PaletteOverrides = _project?.PaletteOverrides ?? [];
         RefreshCatalog(document.Tileset);
         if (clearHistory)
         {
@@ -1045,13 +1145,12 @@ public sealed partial class MainWindow : Window
 
     private PaletteChoice BuildPaletteChoice(int index, bool objects)
     {
-        if (_rom is null || _document is null) return new(index, index.ToString(), []);
-        var preview = Smb3LevelRenderer.ReadPalettePreview(_rom, _document, objects, index);
-        var colors = preview.IsSuccess
-            ? preview.Value!.Select(argb => (Avalonia.Media.IBrush)new Avalonia.Media.SolidColorBrush(
-                Avalonia.Media.Color.FromUInt32(argb))).ToArray()
-            : [];
-        return new PaletteChoice(index, index.ToString(), colors);
+        var slot = GetPaletteSlot(objects, index);
+        if (slot is null) return new(index, index.ToString(), []);
+        var colors = PalettePreview.FromNesColors(slot.Colors);
+        var state = slot.IsModified ? "Modified" : "Stock";
+        var label = string.IsNullOrWhiteSpace(slot.Name) ? $"{index + 1} - {state}" : $"{index + 1} - {slot.Name} ({state})";
+        return new PaletteChoice(index, label, colors);
     }
 
     private static readonly NamedValue[] MusicChoices =

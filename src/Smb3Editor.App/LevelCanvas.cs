@@ -44,6 +44,7 @@ public sealed class LevelCanvas : Control
     private readonly ISmb3LevelRenderer _renderer = new Smb3LevelRenderer();
     private LevelDocument? _document;
     private RomImage? _rom;
+    private IReadOnlyList<PaletteOverride> _paletteOverrides = [];
     private LevelRenderSnapshot? _renderSnapshot;
     private WriteableBitmap? _levelBitmap;
     private readonly Dictionary<byte, WriteableBitmap> _enemyBitmaps = [];
@@ -164,6 +165,17 @@ public sealed class LevelCanvas : Control
         {
             _rom = value;
             UpdateRenderedLevel();
+        }
+    }
+
+    public IReadOnlyList<PaletteOverride> PaletteOverrides
+    {
+        get => _paletteOverrides;
+        set
+        {
+            _paletteOverrides = value ?? [];
+            UpdateRenderedLevel();
+            InvalidateVisual();
         }
     }
 
@@ -851,13 +863,13 @@ public sealed class LevelCanvas : Control
             return false;
         }
 
-        var rendered = _renderer.Render(_rom, _document);
+        var rendered = _renderer.Render(_rom, _document, paletteOverrides: _paletteOverrides);
         if (!rendered.IsSuccess)
         {
             SetActiveRenderDiagnostics(rendered.Diagnostics);
             if (_unsafeElementIndex is int excluded)
             {
-                var preview = _renderer.Render(_rom, _document, excluded);
+                var preview = _renderer.Render(_rom, _document, excluded, _paletteOverrides);
                 if (preview.IsSuccess)
                 {
                     ApplyRenderedSnapshot(preview.Value!, updateState: false);
