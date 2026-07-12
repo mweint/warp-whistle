@@ -1,0 +1,18 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+TestResults/
+artifacts/
+Mesen_2.2.1_Windows/
+*.user
+*.suo
+
+# User-owned ROMs, generated builds, patches, and local editor projects.
+*.nes
+*.rom
+*.bps
+*.ips
+*.smb3proj
+*.smb3proj.bak
+*.recovery

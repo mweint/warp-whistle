@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="src/Smb3Editor.Core/Smb3Editor.Core.csproj" />
+  <Project Path="src/Smb3Editor.App/Smb3Editor.App.csproj" />
+  <Project Path="tests/Smb3Editor.Core.Tests/Smb3Editor.Core.Tests.csproj" />
+</Solution>
+

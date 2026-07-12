@@ -1,0 +1,24 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Smb3Editor.App.SearchableDropDown">
+  <Grid>
+    <Button x:Name="DropDownButton" HorizontalContentAlignment="Stretch" Click="DropDownButton_Click">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock x:Name="SelectedText" Text="Select…" TextTrimming="CharacterEllipsis" />
+        <TextBlock Grid.Column="1" Text="▾" Margin="8,0,0,0" />
+      </Grid>
+    </Button>
+    <Popup x:Name="DropDownPopup" Placement="Bottom" PlacementTarget="{Binding #DropDownButton}"
+           IsLightDismissEnabled="True">
+      <Border Background="#172231" BorderBrush="#526174" BorderThickness="1" MinWidth="300"
+              MaxHeight="390" Padding="6">
+        <Grid RowDefinitions="Auto,*">
+          <TextBox x:Name="FilterBox" PlaceholderText="Filter by name or ID…" TextChanged="FilterBox_TextChanged"
+                   KeyDown="FilterBox_KeyDown" Margin="0,0,0,6" />
+          <ListBox Grid.Row="1" x:Name="ItemsList" SelectionChanged="ItemsList_SelectionChanged"
+                   PointerReleased="ItemsList_PointerReleased" KeyDown="ItemsList_KeyDown" MaxHeight="340" />
+        </Grid>
+      </Border>
+    </Popup>
+  </Grid>
+</UserControl>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Smb3Editor.Core</RootNamespace>
+    <AssemblyName>Smb3Editor.Core</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="EnemyMetadata.json" />
+  </ItemGroup>
+</Project>
