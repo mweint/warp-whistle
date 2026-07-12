@@ -5,6 +5,7 @@
 TestResults/
 artifacts/
 Mesen_2.2.1_Windows/
+
 *.user
 *.suo
 

@@ -2,11 +2,25 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:Smb3Editor.App"
         x:Class="Smb3Editor.App.MainWindow"
-        Title="SMB3 Editor"
+        Title="Warp Whistle"
         Width="1440"
         Height="900"
         MinWidth="900"
         MinHeight="620">
+  <Window.Styles>
+    <Style Selector="Button#SafetyBanner:pointerover">
+      <Setter Property="Background" Value="#A92B1E" />
+    </Style>
+    <Style Selector="Button#SafetyBanner:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#A92B1E" />
+    </Style>
+    <Style Selector="Button#FixUnsafeButton:pointerover">
+      <Setter Property="Background" Value="#8A5A12" />
+    </Style>
+    <Style Selector="Button#FixUnsafeButton:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="#8A5A12" />
+    </Style>
+  </Window.Styles>
   <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
     <Border Grid.Row="0" Background="#172231" Padding="10,8">
       <StackPanel Orientation="Horizontal">
@@ -17,11 +31,6 @@
         <Button Classes="toolbar" Content="Export BPS" Click="ExportBps_Click" />
         <Button Classes="toolbar" Content="Play Test" Click="PlayTest_Click" />
         <Border Width="1" Background="#526174" Margin="4,2,10,2" />
-        <Button Classes="toolbar" Content="Undo" Click="Undo_Click" />
-        <Button Classes="toolbar" Content="Redo" Click="Redo_Click" />
-        <Button Classes="toolbar" Content="Copy" Click="Copy_Click" />
-        <Button Classes="toolbar" Content="Paste" Click="Paste_Click" />
-        <Button Classes="toolbar" Content="Delete" Click="Delete_Click" />
       </StackPanel>
     </Border>
 
@@ -35,6 +44,7 @@
         <Button Content="Add" Click="AddCatalog_Click" />
         <Border Width="1" Height="25" Background="#526174" Margin="5,0" />
         <ToggleButton x:Name="PropertiesToggle" Content="Properties" Click="PropertiesToggle_Click" />
+        <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
         <TextBlock Text="Ctrl + wheel: zoom" VerticalAlignment="Center" Foreground="#718399" Margin="8,0,0,0" />
       </StackPanel>
     </Border>
@@ -87,12 +97,17 @@
           <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <local:LevelCanvas x:Name="EditorCanvas" />
           </ScrollViewer>
-          <Button x:Name="SafetyBanner" IsVisible="False" HorizontalAlignment="Center"
-                  VerticalAlignment="Bottom" Margin="0,0,0,14" Padding="13,7"
-                  Background="#A92B1E" BorderBrush="#FFB4A8" BorderThickness="1"
-                  Click="SafetyBanner_Click">
-            <TextBlock x:Name="SafetyBannerText" FontWeight="SemiBold" Foreground="White" />
-          </Button>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Spacing="6">
+            <Button x:Name="SafetyBanner" IsVisible="False" Padding="13,7"
+                    Background="#A92B1E" BorderBrush="#FFB4A8" BorderThickness="1"
+                    Click="SafetyBanner_Click">
+              <TextBlock x:Name="SafetyBannerText" FontWeight="SemiBold" Foreground="White" />
+            </Button>
+            <Button x:Name="FixUnsafeButton" IsVisible="False" Content="Fix ordering"
+                    Padding="10,7" Background="#8A5A12" BorderBrush="#FFD36A" BorderThickness="1"
+                    Click="FixUnsafe_Click">
+            </Button>
+          </StackPanel>
         </Grid>
       </Border>
     </SplitView>
@@ -101,8 +116,14 @@
       <TextBlock x:Name="RomStatusText" Text="No ROM loaded" TextWrapping="Wrap" Foreground="#9FB0C4" />
     </Border>
 
-    <Expander x:Name="DiagnosticsPanel" Grid.Row="4" Header="Diagnostics" IsExpanded="False" MaxHeight="180" Background="#101720">
-      <ListBox x:Name="DiagnosticsList" MinHeight="80" />
+    <Expander x:Name="DiagnosticsPanel" Grid.Row="4" Header="Diagnostics" IsExpanded="False" Background="#101720">
+      <ListBox x:Name="DiagnosticsList" MaxWidth="900" HorizontalAlignment="Left">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="860" Margin="3,2" />
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
     </Expander>
   </Grid>
 </Window>

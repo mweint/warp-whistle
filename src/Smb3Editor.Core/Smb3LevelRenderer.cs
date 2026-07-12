@@ -30,7 +30,7 @@ public sealed record EnemySpritePreview(
 
 public interface ISmb3LevelRenderer
 {
-    OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document);
+    OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null);
 }
 
 /// <summary>
@@ -144,7 +144,7 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
             bytes.Take(16).Select(value => NesPalette.Argb[value & 0x3F]).ToArray());
     }
 
-    public OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document)
+    public OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null)
     {
         try
         {
@@ -160,7 +160,7 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
                     Diagnostics.Error("RENDER_TILESET", $"Tileset {document.Tileset} is not a supported gameplay tileset."));
             }
 
-            var encoded = Smb3LevelCodec.EncodeLayout(document);
+            var encoded = Smb3LevelCodec.EncodeLayout(document, excludedElementIndex);
             if (!encoded.IsSuccess)
             {
                 return OperationResult<LevelRenderSnapshot>.Failure(encoded.Diagnostics.ToArray());
@@ -181,7 +181,7 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
             cpu.Memory[0x01FC] = 0x00; // Synthetic caller return address ($0000 + 1)
             cpu.Memory[0x01FD] = 0x00;
 
-            var elementByLayoutPointer = BuildElementPointerMap(document);
+            var elementByLayoutPointer = BuildElementPointerMap(document, excludedElementIndex);
             var writesByElement = new Dictionary<int, HashSet<ushort>>();
             int? activeElementIndex = null;
             int? unsafeElementIndex = null;
@@ -226,7 +226,7 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
                     return OperationResult<LevelRenderSnapshot>.Failure(
                         Diagnostics.Error(
                             $"GENERATOR_UNSAFE:ELEMENT:{elementIndex}",
-                            $"Object ${activeElement.GeneratorId:X2} on layer {layer}/{editable.Length} did not complete inside the bounded ROM generator. Its current position, size, or ordering leaves SMB3 searching or writing outside the safe level-generation path{(unsafeTileWriteAddress is ushort address ? $" at ${address:X4}" : string.Empty)}. Reposition, resize, or reorder this object until the level renders again."));
+                        $"{GeneratorDefinition.For(document, activeElement).Name} on layer {layer}/{editable.Length} did not complete inside the bounded ROM generator. Its current position, size, or ordering leaves SMB3 searching or writing outside the safe level-generation path{(unsafeTileWriteAddress is ushort address ? $" at ${address:X4}" : string.Empty)}. Reposition, resize, or reorder this object until the level renders again."));
                 }
                 return OperationResult<LevelRenderSnapshot>.Failure(run.Diagnostics.ToArray());
             }
@@ -390,12 +390,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         return OperationResult<byte[]>.Success(bank.Slice(paletteOffset, 16).ToArray());
     }
 
-    private static IReadOnlyDictionary<int, int> BuildElementPointerMap(LevelDocument document)
+    private static IReadOnlyDictionary<int, int> BuildElementPointerMap(LevelDocument document, int? excludedElementIndex)
     {
         var result = new Dictionary<int, int>();
         var pointer = 0x4000 + Smb3LevelCodec.HeaderLength;
         foreach (var element in document.Elements)
         {
+            if (excludedElementIndex == element.Index) continue;
             result[pointer + 3] = element.Index;
             pointer += element.ExtraParameter is null ? 3 : 4;
             result[pointer] = element.Index;

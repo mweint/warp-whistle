@@ -137,4 +137,23 @@ public sealed class Smb3LevelRendererTests
         Assert.True(renderer.Render(rom, moved.ResizeElement(element.Index, parameter: 2)).IsSuccess);
     }
 
+    [Fact]
+    public void OptionalUnsafePlatformCanBeExcludedForRenderingWithoutChangingDocument()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess);
+        var rom = loaded.Value!;
+        var decoded = Smb3LevelCodec.Decode(rom, rom.Profile.Levels["W1-1"]);
+        Assert.True(decoded.IsSuccess);
+        var document = decoded.Value!;
+        var element = document.Elements.Single(static item => item.Index == 12 && item.GeneratorId == 0);
+        var moved = document.MoveElement(element.Index, 35, element.Y);
+        var preview = new Smb3LevelRenderer().Render(rom, moved, element.Index);
+        Assert.True(preview.IsSuccess);
+        Assert.Contains(moved.Elements, item => item.Index == element.Index);
+        Assert.DoesNotContain(preview.Value!.ElementBounds.Keys, item => item == element.Index);
+    }
+
 }

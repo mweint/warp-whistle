@@ -21,7 +21,7 @@ public static class AppSettingsStore
 
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Smb3Editor",
+        "WarpWhistle",
         "settings.json");
 
     public static OperationResult<AppSettingsV1> Load(string? path = null)

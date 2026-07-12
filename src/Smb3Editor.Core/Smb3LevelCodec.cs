@@ -190,7 +190,7 @@ public static class Smb3LevelCodec
             diagnostics);
     }
 
-    public static OperationResult<byte[]> EncodeLayout(LevelDocument document)
+    public static OperationResult<byte[]> EncodeLayout(LevelDocument document, int? excludedElementIndex = null)
     {
         var diagnostics = Validate(document);
         if (diagnostics.Any(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error))
@@ -209,6 +209,10 @@ public static class Smb3LevelCodec
 
         foreach (var element in document.Elements)
         {
+            if (excludedElementIndex == element.Index)
+            {
+                continue;
+            }
             if (element.Kind == LevelElementKind.Junction)
             {
                 stream.WriteByte(element.OriginalFirstByte);

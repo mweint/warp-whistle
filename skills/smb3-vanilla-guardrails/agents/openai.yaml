@@ -1,4 +1,0 @@
-interface:
-  display_name: "SMB3 Vanilla Guardrails"
-  short_description: "Protect vanilla SMB3 behavior by default"
-  default_prompt: "Use $smb3-vanilla-guardrails to review this editor change for vanilla compatibility."

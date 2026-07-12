@@ -1,4 +1,4 @@
-# SMB3 Editor
+# Warp Whistle
 
 A clean, Windows-first Super Mario Bros. 3 level editor built with .NET 10 and Avalonia 12.
 
@@ -36,7 +36,7 @@ dotnet run --project src/Smb3Editor.App
 Create the self-contained Windows build with:
 
 ```powershell
-dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o artifacts/win-x64-warp-whistle
 ```
 
 ROMs, patches, generated builds, and `.smb3proj` files are ignored by source control.

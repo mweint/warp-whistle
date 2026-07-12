@@ -39,7 +39,8 @@ public sealed record GeneratorDefinition(
 
         if (document.Tileset == 1 && element.GeneratorId is >= 0 and <= 3)
         {
-            return new($"Platform ${element.GeneratorId:X2} to ground", GeneratorConstraint.FloorAnchored,
+            var names = new[] { "Big White Block to Ground", "Big Orange Block to Ground", "Big Green Block to Ground", "Big Blue Block to Ground" };
+            return new(names[element.GeneratorId], GeneratorConstraint.FloorAnchored,
                 CanMoveX: true, CanMoveY: false, CanResizeTop: true, CanResizeRight: true, ParameterName: "Width");
         }
 

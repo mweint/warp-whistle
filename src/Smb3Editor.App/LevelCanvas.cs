@@ -25,6 +25,11 @@ public sealed class CanvasZoomRequestedEventArgs(double oldZoom, double newZoom,
     public Point LogicalPoint { get; } = logicalPoint;
 }
 
+public sealed class CanvasPanRequestedEventArgs(Vector delta) : EventArgs
+{
+    public Vector Delta { get; } = delta;
+}
+
 public sealed record EditorActionFeedback(
     DiagnosticSeverity Severity,
     string Summary,
@@ -46,6 +51,8 @@ public sealed class LevelCanvas : Control
     private int? _selectedElement;
     private int? _selectedEnemy;
     private bool _dragging;
+    private bool _panning;
+    private Point _panPointer;
     private Point _dragPointerStart;
     private double _dragStartScaledTile;
     private int _dragItemStartX;
@@ -66,7 +73,10 @@ public sealed class LevelCanvas : Control
     private readonly Dictionary<int, GeneratorDefinition> _definitionCache = [];
     private IReadOnlyList<Diagnostic> _activeRenderDiagnostics = [];
     private readonly Dictionary<int, string> _elementSafetyDetails = [];
-    private bool _snapshotMatchesDocument;
+    private readonly Dictionary<int, (int X, int Y, int Parameter, int Extra)> _lastValidElementState = [];
+    private readonly Dictionary<int, LevelElementRenderBounds> _lastValidElementBounds = [];
+    private int? _unsafeElementIndex;
+    private bool _suppressHoverUntilPointerMove;
     private string? _layerHint;
     private Point _layerHintPoint;
 
@@ -96,12 +106,56 @@ public sealed class LevelCanvas : Control
 
     public event EventHandler<LevelEditCommittedEventArgs>? EditCommitted;
     public event EventHandler<CanvasZoomRequestedEventArgs>? ZoomRequested;
+    public event EventHandler<CanvasPanRequestedEventArgs>? PanRequested;
     public event Action<string>? SelectionDescriptionChanged;
     public event Action<string>? LayerOrderFeedback;
     public event Action<EditorActionFeedback>? ActionFeedbackAvailable;
     public event Action<IReadOnlyList<Diagnostic>>? ActiveRenderDiagnosticsChanged;
 
     public bool HasBlockingRenderErrors => _activeRenderDiagnostics.Any(item => item.Severity == DiagnosticSeverity.Error);
+    public bool CanFixActiveIssue
+    {
+        get
+        {
+            if (_document is null || _unsafeElementIndex is not int index) return false;
+            var platform = _document.Elements.FirstOrDefault(item => item.Index == index);
+            if (platform is null || platform.GeneratorId is < 0 or > 3) return false;
+            var platformPosition = _document.Elements.Select((item, position) => (item, position))
+                .FirstOrDefault(pair => pair.item.Index == index).position;
+            var groundPosition = FindSupportingGroundPosition(_document.Elements, platformPosition);
+            return groundPosition >= 0 && platformPosition >= 0 && platformPosition < groundPosition;
+        }
+    }
+
+    public bool TryFixActiveIssue()
+    {
+        if (!CanFixActiveIssue || _document is null || _unsafeElementIndex is not int index) return false;
+        var previous = _document;
+        var elements = _document.Elements.ToList();
+        var platformPosition = elements.FindIndex(item => item.Index == index);
+        var groundPosition = FindSupportingGroundPosition(elements, platformPosition);
+        if (platformPosition < 0 || groundPosition < 0 || platformPosition >= groundPosition) return false;
+        var platform = elements[platformPosition];
+        var supportingGround = elements[groundPosition];
+        elements.RemoveAt(platformPosition);
+        groundPosition = elements.FindIndex(item => item.Index == supportingGround.Index);
+        if (groundPosition < 0) return false;
+        elements.Insert(groundPosition + 1, platform);
+        _document = _document with { Elements = elements.ToArray() };
+        Commit(previous);
+        return true;
+    }
+
+    private static bool IsSupportingGround(LevelElement element) => element.GeneratorId is 11 or 12 or 41;
+
+    private static int FindSupportingGroundPosition(IReadOnlyList<LevelElement> elements, int platformPosition)
+    {
+        for (var position = platformPosition + 1; position < elements.Count; position++)
+        {
+            if (IsSupportingGround(elements[position])) return position;
+        }
+        return -1;
+    }
 
     public RomImage? SourceRom
     {
@@ -139,6 +193,43 @@ public sealed class LevelCanvas : Control
         }
     }
 
+    public bool ShowGrid { get; set; } = true;
+
+    public void CopySelectionTo(int x, int y)
+    {
+        if (_document is null) return;
+        var previous = _document;
+        if (_selectedElement is int elementIndex && _document.Elements.FirstOrDefault(item => item.Index == elementIndex) is { Kind: not LevelElementKind.Junction } element)
+        {
+            var definition = GetEffectiveDefinition(element);
+            var maxX = _document.Header.IsVertical ? 15 : 255;
+            var maxY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 26;
+            var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(item => item.Index) + 1;
+            var copy = element with
+            {
+                Index = next,
+                X = definition.CanMoveX ? Math.Clamp(x, 0, maxX) : element.X,
+                Y = definition.CanMoveY ? Math.Clamp(y, 0, maxY) : element.Y
+            };
+            _document = _document with { Elements = _document.Elements.Append(copy).ToArray() };
+            _selectedElement = next;
+            Commit(previous);
+        }
+        else if (_selectedEnemy is int enemyIndex && _document.Enemies.FirstOrDefault(item => item.Index == enemyIndex) is { } enemy)
+        {
+            var next = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(item => item.Index) + 1;
+            var copy = enemy with
+            {
+                Index = next,
+                X = Math.Clamp(x, 0, _document.Header.IsVertical ? 15 : 255),
+                Y = Math.Clamp(y, 0, _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 31)
+            };
+            _document = _document with { Enemies = _document.Enemies.Append(copy).ToArray() };
+            _selectedEnemy = next;
+            Commit(previous);
+        }
+    }
+
     public override void Render(DrawingContext context)
     {
         base.Render(context);
@@ -173,6 +264,7 @@ public sealed class LevelCanvas : Control
                 Math.Max(1, renderBounds.Width) * ScaledTile,
                 Math.Max(1, renderBounds.Height) * ScaledTile);
             var selected = _selectedElement == element.Index;
+            var unsafeObject = _unsafeElementIndex == element.Index;
             var bouncingBlock = element.Kind == LevelElementKind.VariableGenerator && element.GeneratorId == 21;
             var marker = element.Kind == LevelElementKind.Junction
                 ? Color.Parse("#D58CFF")
@@ -183,6 +275,11 @@ public sealed class LevelCanvas : Control
                     null,
                     new Pen(selected ? Brushes.White : new SolidColorBrush(marker, 0.8), selected ? 3 : 2),
                     rect);
+            }
+
+            if (unsafeObject)
+            {
+                context.DrawRectangle(null, new Pen(Brushes.Gold, 2), rect);
             }
 
             if (selected && element.Kind != LevelElementKind.Junction)
@@ -404,6 +501,20 @@ public sealed class LevelCanvas : Control
         FlushWheelOrderBatch();
         Focus();
         var point = e.GetPosition(this);
+        if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
+        {
+            CopySelectionTo((int)(point.X / ScaledTile), (int)(point.Y / ScaledTile));
+            e.Handled = true;
+            return;
+        }
+        if (e.GetCurrentPoint(this).Properties.IsMiddleButtonPressed)
+        {
+            _panning = true;
+            _panPointer = e.GetPosition(null);
+            e.Pointer.Capture(this);
+            e.Handled = true;
+            return;
+        }
         var tileX = (int)(point.X / ScaledTile);
         var tileY = (int)(point.Y / ScaledTile);
 
@@ -456,7 +567,9 @@ public sealed class LevelCanvas : Control
 
         _selectedElement = _selectedEnemy is null
             ? _document?.Elements
-                .Select(item => (Item: item, Distance: ElementAnchorDistanceSquared(item, point)))
+                .Select(item => (Item: item, Distance: Math.Min(
+                    ElementAnchorDistanceSquared(item, point),
+                    EncodedAnchorDistanceSquared(item, point))))
                 .Where(static candidate => candidate.Distance <= 64)
                 .OrderBy(static candidate => candidate.Distance)
                 .Select(static candidate => (int?)candidate.Item.Index)
@@ -501,6 +614,19 @@ public sealed class LevelCanvas : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
+        if (_suppressHoverUntilPointerMove)
+        {
+            _suppressHoverUntilPointerMove = false;
+        }
+        if (_panning)
+        {
+            var pointer = e.GetPosition(null);
+            var delta = pointer - _panPointer;
+            _panPointer = pointer;
+            PanRequested?.Invoke(this, new CanvasPanRequestedEventArgs(delta));
+            e.Handled = true;
+            return;
+        }
         var point = e.GetPosition(this);
         if (!_dragging)
         {
@@ -587,6 +713,13 @@ public sealed class LevelCanvas : Control
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        if (_panning)
+        {
+            _panning = false;
+            e.Pointer.Capture(null);
+            e.Handled = true;
+            return;
+        }
         if (_dragging && _dragStartDocument is not null && _document is not null && _dragStartDocument != _document)
         {
             EditCommitted?.Invoke(this, new LevelEditCommittedEventArgs(_dragStartDocument, _document));
@@ -615,9 +748,11 @@ public sealed class LevelCanvas : Control
             e.Handled = true;
         }
         else if (_document is not null && _selectedElement is int index &&
-                 _document.Elements.FirstOrDefault(item => item.Index == index) is { } selected &&
-                 GetElementRect(selected).Contains(e.GetPosition(this)))
+                 _document.Elements.Any(item => item.Index == index))
         {
+            _suppressHoverUntilPointerMove = true;
+            _hoverTimer.Stop();
+            ToolTip.SetIsOpen(this, false);
             _layerHintPoint = e.GetPosition(this);
             MoveSelectionInOrder(e.Delta.Y > 0 ? 1 : -1, coalesce: true);
             e.Handled = true;
@@ -652,13 +787,19 @@ public sealed class LevelCanvas : Control
         for (var column = 0; column <= columns; column++)
         {
             var x = column * ScaledTile;
-            context.DrawLine(column % 16 == 0 ? screenPen : minorPen, new Point(x, 0), new Point(x, rows * ScaledTile));
+            if (column % 16 == 0 || ShowGrid)
+            {
+                context.DrawLine(column % 16 == 0 ? screenPen : minorPen, new Point(x, 0), new Point(x, rows * ScaledTile));
+            }
         }
 
-        for (var row = 0; row <= rows; row++)
+        if (ShowGrid)
         {
-            var y = row * ScaledTile;
-            context.DrawLine(minorPen, new Point(0, y), new Point(columns * ScaledTile, y));
+            for (var row = 0; row <= rows; row++)
+            {
+                var y = row * ScaledTile;
+                context.DrawLine(minorPen, new Point(0, y), new Point(columns * ScaledTile, y));
+            }
         }
     }
 
@@ -706,7 +847,6 @@ public sealed class LevelCanvas : Control
             _enemyBitmaps.Clear();
             _levelBitmap = null;
             _renderSnapshot = null;
-            _snapshotMatchesDocument = false;
             SetActiveRenderDiagnostics([]);
             return false;
         }
@@ -714,13 +854,25 @@ public sealed class LevelCanvas : Control
         var rendered = _renderer.Render(_rom, _document);
         if (!rendered.IsSuccess)
         {
-            _snapshotMatchesDocument = false;
             SetActiveRenderDiagnostics(rendered.Diagnostics);
+            if (_unsafeElementIndex is int excluded)
+            {
+                var preview = _renderer.Render(_rom, _document, excluded);
+                if (preview.IsSuccess)
+                {
+                    ApplyRenderedSnapshot(preview.Value!, updateState: false);
+                }
+            }
             return false;
         }
         SetActiveRenderDiagnostics([]);
 
-        var newSnapshot = rendered.Value!;
+        ApplyRenderedSnapshot(rendered.Value!, updateState: true);
+        return true;
+    }
+
+    private void ApplyRenderedSnapshot(LevelRenderSnapshot newSnapshot, bool updateState)
+    {
         var newLevelBitmap = CreateBitmap(
             newSnapshot.ArgbPixels,
             newSnapshot.PixelWidth,
@@ -740,14 +892,28 @@ public sealed class LevelCanvas : Control
         _enemyBitmaps.Clear();
         foreach (var pair in newEnemyBitmaps) _enemyBitmaps[pair.Key] = pair.Value;
         _renderSnapshot = newSnapshot;
-        _snapshotMatchesDocument = true;
+        if (updateState && _document is not null)
+        {
+            _lastValidElementState.Clear();
+            _lastValidElementBounds.Clear();
+            foreach (var element in _document.Elements)
+            {
+                _lastValidElementState[element.Index] = (element.X, element.Y, element.Parameter, element.ExtraParameter ?? 0);
+                if (newSnapshot.ElementBounds.TryGetValue(element.Index, out var bounds))
+                {
+                    _lastValidElementBounds[element.Index] = bounds;
+                }
+            }
+        }
         _levelBitmap = newLevelBitmap;
-        return true;
     }
 
     private void SetActiveRenderDiagnostics(IReadOnlyList<Diagnostic> diagnostics)
     {
         _activeRenderDiagnostics = diagnostics;
+        _unsafeElementIndex = diagnostics
+            .Select(item => TryReadElementIndex(item.Code, out var index) ? (int?)index : null)
+            .FirstOrDefault(item => item is not null);
         _elementSafetyDetails.Clear();
         foreach (var diagnostic in diagnostics)
         {
@@ -823,13 +989,38 @@ public sealed class LevelCanvas : Control
         return (deltaX * deltaX) + (deltaY * deltaY);
     }
 
-    private LevelElementRenderBounds GetElementBounds(LevelElement element) =>
-        _snapshotMatchesDocument && _renderSnapshot?.ElementBounds.TryGetValue(element.Index, out var trackedBounds) == true
-            ? trackedBounds
-            : new LevelElementRenderBounds(element.X, element.Y, element.X + 1, element.Y + 1);
+    private double EncodedAnchorDistanceSquared(LevelElement element, Point point)
+    {
+        var anchorX = (element.X + 0.5) * ScaledTile;
+        var anchorY = (element.Y + 0.5) * ScaledTile;
+        var deltaX = point.X - anchorX;
+        var deltaY = point.Y - anchorY;
+        return (deltaX * deltaX) + (deltaY * deltaY);
+    }
+
+    private LevelElementRenderBounds GetElementBounds(LevelElement element)
+    {
+        if (_unsafeElementIndex == element.Index && _lastValidElementBounds.TryGetValue(element.Index, out var lastValidBounds))
+        {
+            return lastValidBounds;
+        }
+        if (_renderSnapshot is null ||
+            !_renderSnapshot.ElementBounds.TryGetValue(element.Index, out var trackedBounds))
+        {
+            return new LevelElementRenderBounds(element.X, element.Y, element.X + 1, element.Y + 1);
+        }
+        if (_lastValidElementState.TryGetValue(element.Index, out var state))
+        {
+            var dx = element.X - state.X;
+            var dy = element.Y - state.Y;
+            return trackedBounds with { Left = trackedBounds.Left + dx, Right = trackedBounds.Right + dx,
+                Top = trackedBounds.Top + dy, Bottom = trackedBounds.Bottom + dy };
+        }
+        return trackedBounds;
+    }
 
     private LevelElementRenderAnchor GetElementAnchor(LevelElement element) =>
-        _snapshotMatchesDocument && _renderSnapshot?.ElementAnchors.TryGetValue(element.Index, out var trackedAnchor) == true
+        _unsafeElementIndex != element.Index && _renderSnapshot?.ElementAnchors.TryGetValue(element.Index, out var trackedAnchor) == true
             ? trackedAnchor
             : new LevelElementRenderAnchor(element.X, element.Y);
 
@@ -1085,13 +1276,53 @@ public sealed class LevelCanvas : Control
 
     private LevelDocument ResizeHorizontal(LevelDocument source, int index, GeneratorDefinition definition, int parameterDelta, int? left = null) =>
         definition.HorizontalSizeUsesExtraParameter
-            ? source.ResizeElement(index, extraParameter: _dragStartExtraParameter + parameterDelta, left: left)
-            : source.ResizeElement(index, parameter: _dragStartParameter + parameterDelta, left: left);
+            ? ResizeHorizontalExtra(source, index, parameterDelta, left)
+            : ResizeHorizontalShape(source, index, parameterDelta, left);
 
     private LevelDocument ResizeVertical(LevelDocument source, int index, GeneratorDefinition definition, int parameterDelta, int? top = null) =>
         definition.VerticalSizeUsesExtraParameter
-            ? source.ResizeElement(index, extraParameter: _dragStartExtraParameter + parameterDelta, top: top)
-            : source.ResizeElement(index, parameter: _dragStartParameter + parameterDelta, top: top);
+            ? ResizeVerticalExtra(source, index, parameterDelta, top)
+            : ResizeVerticalShape(source, index, parameterDelta, top);
+
+    private static LevelDocument ResizeHorizontalShape(LevelDocument source, int index, int delta, int? left)
+    {
+        var element = source.Elements.FirstOrDefault(item => item.Index == index);
+        if (element is null) return source;
+        var parameter = Math.Clamp(element.Parameter + delta, 0, 15);
+        return parameter == element.Parameter
+            ? source
+            : source.ResizeElement(index, parameter: parameter, left: left);
+    }
+
+    private static LevelDocument ResizeHorizontalExtra(LevelDocument source, int index, int delta, int? left)
+    {
+        var element = source.Elements.FirstOrDefault(item => item.Index == index);
+        if (element is null || element.ExtraParameter is not byte extra) return source;
+        var value = Math.Clamp(extra + delta, 0, 255);
+        return value == extra
+            ? source
+            : source.ResizeElement(index, extraParameter: value, left: left);
+    }
+
+    private static LevelDocument ResizeVerticalShape(LevelDocument source, int index, int delta, int? top)
+    {
+        var element = source.Elements.FirstOrDefault(item => item.Index == index);
+        if (element is null) return source;
+        var parameter = Math.Clamp(element.Parameter + delta, 0, 15);
+        return parameter == element.Parameter
+            ? source
+            : source.ResizeElement(index, parameter: parameter, top: top);
+    }
+
+    private static LevelDocument ResizeVerticalExtra(LevelDocument source, int index, int delta, int? top)
+    {
+        var element = source.Elements.FirstOrDefault(item => item.Index == index);
+        if (element is null || element.ExtraParameter is not byte extra) return source;
+        var value = Math.Clamp(extra + delta, 0, 255);
+        return value == extra
+            ? source
+            : source.ResizeElement(index, extraParameter: value, top: top);
+    }
 
     private LevelDocument ResizeCorner(LevelDocument source, int index, GeneratorDefinition definition,
         int horizontalDelta, int verticalDelta, int? left = null, int? top = null)

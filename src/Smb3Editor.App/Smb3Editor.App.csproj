@@ -2,7 +2,8 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <RootNamespace>Smb3Editor.App</RootNamespace>
-    <AssemblyName>Smb3Editor</AssemblyName>
+    <AssemblyName>WarpWhistle</AssemblyName>
+    <ApplicationIcon>Assets\warp-whistle.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
@@ -12,4 +13,3 @@
     <PackageReference Include="Avalonia.Themes.Fluent" />
   </ItemGroup>
 </Project>
-

@@ -25,6 +25,7 @@ public sealed partial class MainWindow : Window
     private AppSettingsV1 _appSettings = new();
     private bool _refreshingInspector;
     private bool _lastPointerWasInsidePropertiesPane;
+    private int _zoomSequence;
 
     public MainWindow() : this(null)
     {
@@ -37,6 +38,7 @@ public sealed partial class MainWindow : Window
         EditorCanvas.EditCommitted += EditorCanvas_EditCommitted;
         EditorCanvas.ActiveRenderDiagnosticsChanged += SetActiveRenderDiagnostics;
         EditorCanvas.ZoomRequested += EditorCanvas_ZoomRequested;
+        EditorCanvas.PanRequested += EditorCanvas_PanRequested;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
         _catalog = BuildCatalog(1);
         CatalogList.ItemsSource = _catalog;
@@ -70,12 +72,34 @@ public sealed partial class MainWindow : Window
                     AddDiagnostics([Diagnostics.Info("ROM_REMEMBERED_MISSING", "The previously used ROM is no longer at its saved path.")]);
                 }
             }
+
+            if (romToOpen is null)
+            {
+                romToOpen = FindLauncherRom();
+            }
         }
 
         if (romToOpen is not null)
         {
             OpenRom(romToOpen, createProject: true);
         }
+    }
+
+    private string? FindLauncherRom()
+    {
+        var candidates = Directory.EnumerateFiles(AppContext.BaseDirectory, "*.nes", SearchOption.TopDirectoryOnly)
+            .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase);
+        foreach (var candidate in candidates)
+        {
+            var loaded = RomImage.Load(candidate);
+            if (loaded.IsSuccess)
+            {
+                AddDiagnostics([Diagnostics.Info("ROM_LAUNCHER_FOUND", $"Using verified ROM beside the Warp Whistle launcher: {Path.GetFileName(candidate)}")]);
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -247,7 +271,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Smb3Editor", "Playtest");
+        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "Playtest");
         var romPath = Path.Combine(directory, "playtest.nes");
         var written = AtomicFile.Write(romPath, artifact.Value!.RomBytes, maintainBackup: false);
         AddDiagnostics(written.Diagnostics);
@@ -383,16 +407,42 @@ public sealed partial class MainWindow : Window
         RefreshDiagnosticsList();
         var error = diagnostics.FirstOrDefault(item => item.Severity == DiagnosticSeverity.Error);
         SafetyBanner.IsVisible = error is not null;
+        FixUnsafeButton.IsVisible = error is not null && EditorCanvas.CanFixActiveIssue;
         if (error is not null)
         {
-            var summary = error.Message.Split(". ", 2, StringSplitOptions.None)[0];
-            SafetyBannerText.Text = $"Unsafe level: {summary} — click for details";
+            string name = "Level state";
+            if (TryReadElementIndex(error.Code, out var index) && EditorCanvas.Document?.Elements.FirstOrDefault(item => item.Index == index) is { } element)
+            {
+                name = ObjectCatalogNames.Describe(EditorCanvas.Document.Tileset, element).Split('\n')[0];
+            }
+            SafetyBannerText.Text = $"Unsafe: {name}";
         }
+    }
+
+    private void FixUnsafe_Click(object? sender, RoutedEventArgs e)
+    {
+        if (EditorCanvas.TryFixActiveIssue())
+        {
+            FixUnsafeButton.IsVisible = false;
+        }
+    }
+
+    private static bool TryReadElementIndex(string code, out int index)
+    {
+        const string marker = ":ELEMENT:";
+        var position = code.IndexOf(marker, StringComparison.Ordinal);
+        return int.TryParse(position >= 0 ? code[(position + marker.Length)..] : null, out index);
     }
 
     private void SafetyBanner_Click(object? sender, RoutedEventArgs e)
     {
         DiagnosticsPanel.IsExpanded = true;
+    }
+
+    private void GridToggle_Click(object? sender, RoutedEventArgs e)
+    {
+        EditorCanvas.ShowGrid = GridToggle.IsChecked == true;
+        EditorCanvas.InvalidateVisual();
     }
 
     private void EditorCanvas_ZoomRequested(object? sender, CanvasZoomRequestedEventArgs e)
@@ -403,10 +453,26 @@ public sealed partial class MainWindow : Window
         LevelScrollViewer.UpdateLayout();
         var targetX = (e.LogicalPoint.X * e.NewZoom) - viewportPoint.X;
         var targetY = (e.LogicalPoint.Y * e.NewZoom) - viewportPoint.Y;
-        LevelScrollViewer.Offset = new Avalonia.Vector(
-            Math.Clamp(targetX, 0, Math.Max(0, LevelScrollViewer.Extent.Width - LevelScrollViewer.Viewport.Width)),
-            Math.Clamp(targetY, 0, Math.Max(0, LevelScrollViewer.Extent.Height - LevelScrollViewer.Viewport.Height)));
+        SetScrollOffset(targetX, targetY);
+        var sequence = ++_zoomSequence;
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (sequence != _zoomSequence) return;
+            LevelScrollViewer.UpdateLayout();
+            SetScrollOffset(targetX, targetY);
+        }, DispatcherPriority.Render);
     }
+
+    private void EditorCanvas_PanRequested(object? sender, CanvasPanRequestedEventArgs e)
+    {
+        var offset = LevelScrollViewer.Offset;
+        SetScrollOffset(offset.X - e.Delta.X, offset.Y - e.Delta.Y);
+    }
+
+    private void SetScrollOffset(double x, double y) =>
+        LevelScrollViewer.Offset = new Avalonia.Vector(
+            Math.Clamp(x, 0, Math.Max(0, LevelScrollViewer.Extent.Width - LevelScrollViewer.Viewport.Width)),
+            Math.Clamp(y, 0, Math.Max(0, LevelScrollViewer.Extent.Height - LevelScrollViewer.Viewport.Height)));
 
     private void AutosaveTimer_Tick(object? sender, EventArgs e)
     {
