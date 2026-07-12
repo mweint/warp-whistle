@@ -10,6 +10,7 @@ namespace Smb3Editor.App;
 public sealed partial class MainWindow : Window
 {
     private readonly IRomCompiler _compiler = new RomCompiler();
+    private readonly IDirectLevelTestBuilder _directLevelTestBuilder = new DirectLevelTestBuilder();
     private readonly IBpsCodec _bpsCodec = new BpsCodec();
     private readonly IEmulatorLauncher _emulatorLauncher = new EmulatorLauncher();
     private readonly ISmb3LevelRenderer _safetyRenderer = new Smb3LevelRenderer();
@@ -25,6 +26,9 @@ public sealed partial class MainWindow : Window
     private AppSettingsV1 _appSettings = new();
     private bool _refreshingInspector;
     private bool _lastPointerWasInsidePropertiesPane;
+    private bool _paletteObjectsEditing;
+    private byte[] _editingPaletteColors = new byte[16];
+    private string _playMode = "rom";
     private int _zoomSequence;
 
     public MainWindow() : this(null)
@@ -51,8 +55,20 @@ public sealed partial class MainWindow : Window
         {
             _appSettings = settings.Value!;
         }
-        EmulatorPathBox.Text = _appSettings.EmulatorPath;
+        var configuredEmulator = !string.IsNullOrWhiteSpace(_appSettings.EmulatorPath) && File.Exists(_appSettings.EmulatorPath)
+            ? _appSettings.EmulatorPath
+            : FindExternalMesen();
+        if (!string.IsNullOrWhiteSpace(configuredEmulator) && !string.Equals(configuredEmulator, _appSettings.EmulatorPath, StringComparison.OrdinalIgnoreCase))
+        {
+            _appSettings = _appSettings with { EmulatorPath = configuredEmulator };
+            AddDiagnostics([Diagnostics.Info("EMULATOR_EXTERNAL_FOUND", "Using Mesen from externals/emulators.")]);
+            AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
+        }
+        EmulatorPathBox.Text = configuredEmulator;
         EmulatorArgumentsBox.Text = string.Join(Environment.NewLine, _appSettings.EmulatorArguments ?? ["{rom}"]);
+        _playMode = "rom";
+        _playMode = _appSettings.PlayMode == "level" ? "level" : "rom";
+        UpdatePlayModeUi();
 
         string? romToOpen = null;
         if (!string.IsNullOrWhiteSpace(startupRomPath) && File.Exists(startupRomPath))
@@ -75,7 +91,7 @@ public sealed partial class MainWindow : Window
 
             if (romToOpen is null)
             {
-                romToOpen = FindLauncherRom();
+                romToOpen = FindExternalRom();
             }
         }
 
@@ -85,21 +101,51 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private string? FindLauncherRom()
+    private string? FindExternalRom()
     {
-        var candidates = Directory.EnumerateFiles(AppContext.BaseDirectory, "*.nes", SearchOption.TopDirectoryOnly)
-            .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase);
+        var directory = Path.Combine(AppContext.BaseDirectory, "externals", "roms");
+        if (!Directory.Exists(directory)) return null;
+
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory.EnumerateFiles(directory, "*.nes", SearchOption.TopDirectoryOnly)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AddDiagnostics([Diagnostics.Warning("ROM_EXTERNAL_READ", "Could not read externals/roms.")]);
+            return null;
+        }
+
         foreach (var candidate in candidates)
         {
             var loaded = RomImage.Load(candidate);
             if (loaded.IsSuccess)
             {
-                AddDiagnostics([Diagnostics.Info("ROM_LAUNCHER_FOUND", $"Using verified ROM beside the Warp Whistle launcher: {Path.GetFileName(candidate)}")]);
+                AddDiagnostics([Diagnostics.Info("ROM_EXTERNAL_FOUND", $"Using verified ROM from externals/roms: {Path.GetFileName(candidate)}")]);
                 return candidate;
             }
         }
 
         return null;
+    }
+
+    private static string? FindExternalMesen()
+    {
+        var directory = Path.Combine(AppContext.BaseDirectory, "externals", "emulators");
+        if (!Directory.Exists(directory)) return null;
+        try
+        {
+            return Directory.EnumerateFiles(directory, "Mesen.exe", SearchOption.AllDirectories)
+                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -255,21 +301,42 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(AtomicFile.Write(file.Path.LocalPath, patch, maintainBackup: true).Diagnostics);
     }
 
-    private void PlayTest_Click(object? sender, RoutedEventArgs e)
+    private void PlayButton_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_playMode == "level") PlayCurrentLevel_Click(sender, e);
+        else PlayTest_Click(sender, e);
+    }
+
+    private void SwitchPlayMode_Click(object? sender, RoutedEventArgs e) => SwitchPlayMode();
+
+    private void SwitchPlayMode()
+    {
+        _playMode = _playMode == "rom" ? "level" : "rom";
+        UpdatePlayModeUi();
+        _appSettings = _appSettings with { PlayMode = _playMode };
+        AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
+    }
+
+    private void UpdatePlayModeUi()
+    {
+        PlayButton.Content = _playMode == "level" ? "Play Level" : "Play ROM";
+        PlayModeMenuItem.Header = _playMode == "level" ? "Play ROM" : "Play Level";
+    }
+
+    private async void PlayTest_Click(object? sender, RoutedEventArgs e)
     {
         SaveGlobalEmulatorSettings();
+        if (!await EnsureEmulatorConfiguredAsync())
+        {
+            return;
+        }
         var artifact = CompileCurrentProject();
         if (!artifact.IsSuccess)
         {
             return;
         }
 
-        var emulatorPath = EmulatorPathBox.Text?.Trim();
-        if (string.IsNullOrWhiteSpace(emulatorPath))
-        {
-            AddDiagnostics([Diagnostics.Error("EMULATOR_CONFIG", "Choose an external emulator before play-testing.")]);
-            return;
-        }
+        var emulatorPath = EmulatorPathBox.Text!.Trim();
 
         var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "Playtest");
         var romPath = Path.Combine(directory, "playtest.nes");
@@ -285,8 +352,162 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(_emulatorLauncher.Launch(new EmulatorConfiguration(emulatorPath, arguments), romPath).Diagnostics);
     }
 
+    private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
+    {
+        SaveGlobalEmulatorSettings();
+        if (!await EnsureEmulatorConfiguredAsync())
+        {
+            return;
+        }
+
+        if (_rom is null || _document is null || !_rom.Profile.Levels.TryGetValue(_document.AreaId, out var selectedLevel))
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_NONE", "Select a verified level before using Play Level.")]);
+            return;
+        }
+
+        var compiled = CompileCurrentProject();
+        if (!compiled.IsSuccess)
+        {
+            return;
+        }
+
+        var directTest = _directLevelTestBuilder.Build(compiled.Value!, _rom, selectedLevel);
+        AddDiagnostics(directTest.Diagnostics);
+        if (!directTest.IsSuccess)
+        {
+            return;
+        }
+
+        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "Playtest");
+        TryCleanDirectPlaytests(directory);
+        var romPath = Path.Combine(directory, $"play-level-{selectedLevel.AreaId}-{Guid.NewGuid():N}.nes");
+        var written = AtomicFile.Write(romPath, directTest.Value!.RomBytes, maintainBackup: false);
+        AddDiagnostics(written.Diagnostics);
+        if (!written.IsSuccess)
+        {
+            return;
+        }
+
+        try
+        {
+            var verification = _directLevelTestBuilder.VerifyReadback(directTest.Value, File.ReadAllBytes(romPath));
+            AddDiagnostics(verification.Diagnostics);
+            if (!verification.IsSuccess)
+            {
+                return;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_READBACK", $"The temporary level test could not be verified: {ex.Message}")]);
+            return;
+        }
+
+        RomStatusText.Text = $"Launching {selectedLevel.DisplayName} as Small Mario";
+        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
+            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        AddDiagnostics(_emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath).Diagnostics);
+    }
+
+    private static void TryCleanDirectPlaytests(string directory)
+    {
+        try
+        {
+            if (!Directory.Exists(directory)) return;
+            var cutoff = DateTime.UtcNow.AddDays(-1);
+            foreach (var file in Directory.EnumerateFiles(directory, "play-level-*.nes"))
+            {
+                if (File.GetLastWriteTimeUtc(file) < cutoff)
+                {
+                    File.Delete(file);
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // A locked emulator image is disposable and will be retried later.
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // A locked emulator image is disposable and will be retried later.
+        }
+    }
+
+    private void ApplyPalette_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_project is null || _document is null || !TryReadPaletteValues(out var colors, out var objects, out var slot)) return;
+        var overrides = (_project.PaletteOverrides ?? []).Where(item => !(item.Tileset == _document.Tileset && item.Objects == objects && item.Slot == slot)).ToList();
+        overrides.Add(new PaletteOverride(_document.Tileset, objects, slot, colors));
+        _project = _project with { PaletteOverrides = overrides };
+        MarkProjectChanged();
+        AddDiagnostics([Diagnostics.Info("PALETTE_APPLIED", $"Edited {(objects ? "object" : "background")} palette slot {slot} for tileset {_document.Tileset}. Shared levels will use this slot.")]);
+    }
+
+    private void TogglePaletteLibrary_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!TryReadPaletteValues(out var colors, out var objects, out var slot)) return;
+        var loaded = PaletteLibraryStore.Load();
+        AddDiagnostics(loaded.Diagnostics);
+        if (!loaded.IsSuccess) return;
+        var palettes = loaded.Value!.ToList();
+        var name = $"Tileset {_document?.Tileset ?? 0} {(objects ? "Object" : "Background")} {slot}";
+        var existing = palettes.FindIndex(item => string.Equals(item.Name, name, StringComparison.Ordinal));
+        if (existing >= 0)
+        {
+            palettes.RemoveAt(existing);
+            PaletteHeartButton.Content = "♡";
+        }
+        else
+        {
+            palettes.Add(new SavedPalette(name, objects, colors));
+            PaletteHeartButton.Content = "♥";
+        }
+        AddDiagnostics(PaletteLibraryStore.Save(palettes).Diagnostics);
+    }
+
+    private void ApplyPaletteLibrary_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_document is null) return;
+        var loaded = PaletteLibraryStore.Load();
+        AddDiagnostics(loaded.Diagnostics);
+        if (!loaded.IsSuccess || loaded.Value!.Count == 0)
+        {
+            AddDiagnostics([Diagnostics.Info("PALETTE_LIBRARY_EMPTY", "Save a palette to the library before applying one.")]);
+            return;
+        }
+        var palette = loaded.Value!.Last();
+        var slot = palette.Objects ? _document.Header.ObjectPalette : _document.Header.BackgroundPalette;
+        _editingPaletteColors = palette.Colors.Take(16).Concat(Enumerable.Repeat((byte)0, 16)).Take(16).ToArray();
+        if (palette.Objects) ObjectPaletteBox.SelectedItem = ((IEnumerable<PaletteChoice>)ObjectPaletteBox.ItemsSource!).First(item => item.Value == slot);
+        else BackgroundPaletteBox.SelectedItem = ((IEnumerable<PaletteChoice>)BackgroundPaletteBox.ItemsSource!).First(item => item.Value == slot);
+        ApplyPalette_Click(sender, e);
+    }
+
+    private bool TryReadPaletteValues(out byte[] colors, out bool objects, out int slot)
+    {
+        colors = [];
+        objects = false;
+        slot = 0;
+        if (_document is null) return false;
+        objects = _paletteObjectsEditing;
+        slot = objects ? _document.Header.ObjectPalette : _document.Header.BackgroundPalette;
+        colors = _editingPaletteColors.ToArray();
+        return true;
+    }
+
     private async void ChooseEmulator_Click(object? sender, RoutedEventArgs e)
     {
+        await EnsureEmulatorConfiguredAsync();
+    }
+
+    private async Task<bool> EnsureEmulatorConfiguredAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(EmulatorPathBox.Text) && File.Exists(EmulatorPathBox.Text.Trim()))
+        {
+            return true;
+        }
+
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Choose emulator executable",
@@ -298,7 +519,11 @@ public sealed partial class MainWindow : Window
             EmulatorPathBox.Text = files[0].Path.LocalPath;
             UpdateProjectEditorSettings();
             SaveGlobalEmulatorSettings();
+            return true;
         }
+
+        AddDiagnostics([Diagnostics.Error("EMULATOR_CONFIG", "Choose an external emulator before play-testing.")]);
+        return false;
     }
 
     private void PropertiesToggle_Click(object? sender, RoutedEventArgs e) =>
@@ -327,7 +552,11 @@ public sealed partial class MainWindow : Window
         => ApplyHeaderValues();
 
     private void HeaderSelectionChanged(object? sender, SelectionChangedEventArgs e)
-        => ApplyHeaderValues();
+    {
+        if (ReferenceEquals(sender, ObjectPaletteBox)) _paletteObjectsEditing = true;
+        else if (ReferenceEquals(sender, BackgroundPaletteBox)) _paletteObjectsEditing = false;
+        ApplyHeaderValues();
+    }
 
     private void ApplyHeaderValues()
     {
@@ -663,7 +892,7 @@ public sealed partial class MainWindow : Window
 
     private void RefreshInspector()
     {
-        if (_document is null)
+        if (_document is null || _rom is null)
         {
             SpaceText.Text = "No area loaded";
             return;
@@ -681,6 +910,9 @@ public sealed partial class MainWindow : Window
         TimeBox.ItemsSource = TimeChoices;
         BackgroundPaletteBox.SelectedItem = ((IEnumerable<PaletteChoice>)BackgroundPaletteBox.ItemsSource).First(item => item.Value == _document.Header.BackgroundPalette);
         ObjectPaletteBox.SelectedItem = ((IEnumerable<PaletteChoice>)ObjectPaletteBox.ItemsSource).First(item => item.Value == _document.Header.ObjectPalette);
+        var palette = Smb3LevelRenderer.ReadPaletteIndices(_rom, _document, false, _document.Header.BackgroundPalette);
+        _editingPaletteColors = palette.IsSuccess ? palette.Value!.ToArray() : new byte[16];
+        RefreshPaletteSwatches();
         MusicBox.SelectedItem = MusicChoices.First(item => item.Value == _document.Header.Music);
         TimeBox.SelectedItem = TimeChoices.First(item => item.Value == _document.Header.TimeSetting);
         _refreshingInspector = false;
@@ -770,6 +1002,46 @@ public sealed partial class MainWindow : Window
     }
 
     private sealed record PaletteChoice(int Value, string Name, IReadOnlyList<Avalonia.Media.IBrush> Colors);
+    private sealed record PaletteSwatch(int Index, byte Value, Avalonia.Media.IBrush Brush);
+
+    private void PaletteSwatch_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: int index } || index < 0 || index >= _editingPaletteColors.Length) return;
+        _editingPaletteColors[index] = (byte)((_editingPaletteColors[index] + 1) & 0x3F);
+        RefreshPaletteSwatches();
+    }
+
+    private void RefreshPaletteSwatches()
+    {
+        PaletteSwatches.Children.Clear();
+        for (var index = 0; index < _editingPaletteColors.Length; index++)
+        {
+            PaletteSwatches.Children.Add(new Button
+            {
+                Width = 24,
+                Height = 24,
+                Margin = new Avalonia.Thickness(1),
+                Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.FromUInt32(Smb3PaletteColor(_editingPaletteColors[index]))),
+                Tag = index
+            });
+            var swatch = (Button)PaletteSwatches.Children[^1];
+            ToolTip.SetTip(swatch, $"Color ${_editingPaletteColors[index]:X2}");
+            swatch.Click += PaletteSwatch_Click;
+        }
+    }
+
+    private static uint Smb3PaletteColor(byte value)
+    {
+        var colors = new uint[] { 0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4, 0xFF5C007E, 0xFF6E0040, 0xFF6C0700, 0xFF561D00,
+            0xFF3C2400, 0xFF0B3C00, 0xFF004B00, 0xFF00412B, 0xFF003E5C, 0xFF000000, 0xFF000000, 0xFF000000,
+            0xFFADADAD, 0xFF155FD9, 0xFF4240FF, 0xFF7527FE, 0xFFA01ACC, 0xFFB71E7B, 0xFFB53120, 0xFF994E00,
+            0xFF6B4700, 0xFF1E5E00, 0xFF008000, 0xFF00785A, 0xFF007399, 0xFF000000, 0xFF000000, 0xFF000000,
+            0xFFFFFEFF, 0xFF64B0FF, 0xFF9390FF, 0xFFB36BFF, 0xFFF05CFF, 0xFFFF5AA8, 0xFFFF7A59, 0xFFFFA139,
+            0xFFFFC739, 0xFF9BEF45, 0xFF4FEF6F, 0xFF4FEFD0, 0xFF3FD9FF, 0xFF000000, 0xFF000000, 0xFF000000,
+            0xFFFFFEFF, 0xFFB8E8FF, 0xFFD0D0FF, 0xFFE0BFFF, 0xFFFFBFF3, 0xFFFFBFDB, 0xFFFFC7B3, 0xFFFFD59B,
+            0xFFFFE79B, 0xFFD7F7A5, 0xFFBFFFBF, 0xFFBFFFE8, 0xFFBFEFFF, 0xFF000000, 0xFF000000, 0xFF000000 };
+        return colors[value & 0x3F];
+    }
 
     private PaletteChoice BuildPaletteChoice(int index, bool objects)
     {

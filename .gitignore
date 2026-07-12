@@ -5,6 +5,10 @@
 TestResults/
 artifacts/
 Mesen_2.2.1_Windows/
+references/
+externals/
+WarpWhistle.exe
+WarpWhistle.pdb
 
 *.user
 *.suo

@@ -20,6 +20,25 @@ public sealed class RomCompiler : IRomCompiler
         }
 
         var output = source.Bytes.ToArray();
+        foreach (var palette in project.PaletteOverrides ?? [])
+        {
+            if (palette.Tileset < 0 || palette.Tileset >= 19 || palette.Slot < 0 || palette.Slot >= (palette.Objects ? 4 : 8) || palette.Colors.Count != 16)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_PALETTE_SLOT", $"Palette slot {palette.Slot} is outside the vanilla {(palette.Objects ? "object" : "background")} palette range."));
+                continue;
+            }
+            var bank = 27;
+            var pointerOffset = 16 + (bank * 0x2000) + 0x17D2 + (palette.Tileset * 2);
+            var pointer = output[pointerOffset] | (output[pointerOffset + 1] << 8);
+            var paletteOffset = pointer - 0xA000 + ((palette.Objects ? 8 : 0) + palette.Slot) * 16;
+            var romOffset = 16 + (bank * 0x2000) + paletteOffset;
+            if (paletteOffset < 0 || paletteOffset > 0x2000 - 16 || romOffset < 0 || romOffset + 16 > output.Length)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_PALETTE_RANGE", $"Palette slot {palette.Slot} for tileset {palette.Tileset} points outside the verified palette bank."));
+                continue;
+            }
+            palette.Colors.ToArray().CopyTo(output, romOffset);
+        }
         foreach (var pair in project.ModifiedAreas.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
             if (!source.Profile.Levels.TryGetValue(pair.Key, out var location))

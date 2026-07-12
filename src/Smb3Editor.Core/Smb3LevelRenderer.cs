@@ -144,6 +144,21 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
             bytes.Take(16).Select(value => NesPalette.Argb[value & 0x3F]).ToArray());
     }
 
+    public static OperationResult<byte[]> ReadPaletteIndices(RomImage rom, LevelDocument document, bool objects, int selection)
+    {
+        const int paletteBank = 27;
+        const int palettePointerTableOffset = 0x17D2;
+        var bank = rom.Prg.Slice(paletteBank * PrgBankSize, PrgBankSize);
+        var pointerOffset = palettePointerTableOffset + (document.Tileset * 2);
+        var pointer = bank[pointerOffset] | (bank[pointerOffset + 1] << 8);
+        var paletteOffset = pointer - 0xA000 + ((objects ? 8 : 0) + selection) * 16;
+        if (paletteOffset < 0 || paletteOffset > bank.Length - 16)
+        {
+            return OperationResult<byte[]>.Failure(Diagnostics.Error("PALETTE_RANGE", "The selected palette slot is outside the verified palette table."));
+        }
+        return OperationResult<byte[]>.Success(bank.Slice(paletteOffset, 16).ToArray());
+    }
+
     public OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null)
     {
         try
@@ -241,8 +256,8 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
             }
 
             var enemySprites = ComposeEnemySprites(rom, document);
-            var elementBounds = BuildElementBounds(document, writesByElement, width, height);
-            var elementAnchors = BuildElementAnchors(document, writesByElement, width, height);
+            var elementBounds = BuildElementBounds(document, writesByElement, width, height, excludedElementIndex);
+            var elementAnchors = BuildElementAnchors(document, writesByElement, width, height, excludedElementIndex);
             return OperationResult<LevelRenderSnapshot>.Success(
                 new LevelRenderSnapshot(
                     width,
@@ -409,11 +424,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         LevelDocument document,
         IReadOnlyDictionary<int, HashSet<ushort>> writesByElement,
         int width,
-        int height)
+        int height,
+        int? excludedElementIndex)
     {
         var result = new Dictionary<int, LevelElementRenderBounds>();
         foreach (var element in document.Elements)
         {
+            if (excludedElementIndex == element.Index) continue;
             var points = writesByElement.TryGetValue(element.Index, out var addresses)
                 ? addresses.Select(address => TileMemoryToPoint(address, document.Header.IsVertical))
                     .Where(point => point.X >= 0 && point.X < width && point.Y >= 0 && point.Y < height)
@@ -435,11 +452,13 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
         LevelDocument document,
         IReadOnlyDictionary<int, HashSet<ushort>> writesByElement,
         int width,
-        int height)
+        int height,
+        int? excludedElementIndex)
     {
         var result = new Dictionary<int, LevelElementRenderAnchor>();
         foreach (var element in document.Elements)
         {
+            if (excludedElementIndex == element.Index) continue;
             var points = writesByElement.TryGetValue(element.Index, out var addresses)
                 ? addresses.Select(address => TileMemoryToPoint(address, document.Header.IsVertical))
                     .Where(point => point.X >= 0 && point.X < width && point.Y >= 0 && point.Y < height)

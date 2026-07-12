@@ -4,6 +4,21 @@ A clean, Windows-first Super Mario Bros. 3 level editor built with .NET 10 and A
 
 The application never ships with a ROM. It accepts only verified US PRG0/PRG1 images supplied by the user, keeps the source immutable, stores edits in a JSON project, and exports a new ROM or BPS patch atomically.
 
+## Local workspace layout
+
+Keep the project root tidy. Launch `WarpWhistle.exe`, then place local files here:
+
+```text
+externals/
+  roms/                   Clean US PRG0 or PRG1 .nes files
+  emulators/
+    Mesen/                Mesen folder containing Mesen.exe
+references/
+  smb3-prg1-disassembly/ Local research reference
+```
+
+When no previous choice is saved, Warp Whistle opens the first verified ROM in `externals/roms` and uses `Mesen.exe` found under `externals/emulators`. These folders, projects, ROMs, builds, and references are local-only and ignored by Git.
+
 ## Current vertical slice
 
 - Verifies clean US PRG0 and PRG1 ROMs by SHA-1 and iNES/MMC3 structure.

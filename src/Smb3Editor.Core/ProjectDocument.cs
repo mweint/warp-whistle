@@ -12,13 +12,17 @@ public sealed record EditorState(
     double PanX = 0,
     double PanY = 0,
     string? EmulatorPath = null,
-    IReadOnlyList<string>? EmulatorArguments = null);
+    IReadOnlyList<string>? EmulatorArguments = null,
+    string PlayMode = "rom");
+
+public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
 
 public sealed record ProjectDocumentV2(
     int FormatVersion,
     ProjectSource Source,
     IReadOnlyDictionary<string, LevelDocument> ModifiedAreas,
-    EditorState EditorState)
+    EditorState EditorState,
+    IReadOnlyList<PaletteOverride>? PaletteOverrides = null)
 {
     public const int CurrentFormatVersion = 2;
 
@@ -26,7 +30,8 @@ public sealed record ProjectDocumentV2(
         CurrentFormatVersion,
         new ProjectSource(source.Profile.Id, source.Sha1, source.Sha256, source.SourcePath),
         new Dictionary<string, LevelDocument>(StringComparer.Ordinal),
-        new EditorState());
+        new EditorState(),
+        []);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)
     {

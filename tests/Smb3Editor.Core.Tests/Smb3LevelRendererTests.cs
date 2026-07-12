@@ -153,7 +153,7 @@ public sealed class Smb3LevelRendererTests
         var preview = new Smb3LevelRenderer().Render(rom, moved, element.Index);
         Assert.True(preview.IsSuccess);
         Assert.Contains(moved.Elements, item => item.Index == element.Index);
-        Assert.DoesNotContain(preview.Value!.ElementBounds.Keys, item => item == element.Index);
+        Assert.DoesNotContain(element.Index, preview.Value!.ElementBounds.Keys);
     }
 
 }
