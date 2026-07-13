@@ -41,6 +41,11 @@ public sealed record EditorActionFeedback(
 public sealed class LevelCanvas : Control
 {
     private const double TilePixels = 16;
+    // Keep the bottom-edge resize handle inside the scrollable control. Without
+    // this gutter, a handle on the last visible row is clipped by the viewport.
+    private const double BottomHandleGutter = 12;
+    private static readonly double[] PlayerStartXCoordinates = [1.5, 7, 13.5, 8];
+    private static readonly double[] PlayerStartYCoordinates = [23, 4, 0, 20, 7, 11, 15, 24];
     private readonly ISmb3LevelRenderer _renderer = new Smb3LevelRenderer();
     private LevelDocument? _document;
     private RomImage? _rom;
@@ -48,10 +53,13 @@ public sealed class LevelCanvas : Control
     private LevelRenderSnapshot? _renderSnapshot;
     private WriteableBitmap? _levelBitmap;
     private readonly Dictionary<byte, WriteableBitmap> _enemyBitmaps = [];
+    private byte[]? _smallMarioPixels;
     private LevelDocument? _dragStartDocument;
     private int? _selectedElement;
     private int? _selectedEnemy;
     private bool _dragging;
+    private bool _draggingPlayerStart;
+    private bool _playerStartSelected;
     private bool _panning;
     private Point _panPointer;
     private Point _dragPointerStart;
@@ -70,6 +78,7 @@ public sealed class LevelCanvas : Control
     private int _dragStartParameter;
     private int _dragStartExtraParameter;
     private int _dragResizeTilesPerStep = 1;
+    private int _dragStartRenderedBottom;
     private LevelDocument? _definitionDocument;
     private readonly Dictionary<int, GeneratorDefinition> _definitionCache = [];
     private IReadOnlyList<Diagnostic> _activeRenderDiagnostics = [];
@@ -111,6 +120,7 @@ public sealed class LevelCanvas : Control
     public event Action<string>? SelectionDescriptionChanged;
     public event Action<string>? LayerOrderFeedback;
     public event Action<EditorActionFeedback>? ActionFeedbackAvailable;
+    public event Action? PersistentActionFeedbackCleared;
     public event Action<IReadOnlyList<Diagnostic>>? ActiveRenderDiagnosticsChanged;
     public event Action<int, int>? CatalogPlacementRequested;
 
@@ -165,6 +175,7 @@ public sealed class LevelCanvas : Control
         set
         {
             _rom = value;
+            LoadSmallMarioSprite();
             UpdateRenderedLevel();
         }
     }
@@ -272,6 +283,7 @@ public sealed class LevelCanvas : Control
 
         DrawGrid(context, columns, rows);
         DrawLayerHint(context);
+        DrawPlayerStart(context);
 
         foreach (var element in _document.Elements)
         {
@@ -405,14 +417,14 @@ public sealed class LevelCanvas : Control
         y = Math.Clamp(y, 0, maxY);
         var encoded = generatorId + 1;
         var firstHigh = (encoded / 15) << 5;
-        var shape = (byte)(((encoded % 15) << 4) | 0x01);
+        var shape = (byte)(((encoded % 15) << 4) | GeneratorDefaults.Parameter(_document.Tileset, generatorId));
         var first = _document.Header.IsVertical
             ? (byte)((firstHigh & 0xF0) | (y % 15))
             : (byte)((firstHigh & 0xE0) | (y & 0x1F));
         var second = _document.Header.IsVertical
             ? (byte)(((y / 15) << 4) | (x & 0x0F))
             : (byte)x;
-        byte? extra = FourByteGeneratorIds.Contains(generatorId) ? (byte)0 : null;
+        var extra = GeneratorDefaults.ExtraParameter(_document.Tileset, FourByteGeneratorIds, generatorId);
         var element = new LevelElement(next, LevelElementKind.VariableGenerator, generatorId, x, y, shape, extra, first, second, x, y);
         _document = _document with { Elements = _document.Elements.Append(element).ToArray() };
         _selectedElement = next;
@@ -445,7 +457,7 @@ public sealed class LevelCanvas : Control
         _selectedElement = null;
         Commit(previous);
         if (reordered) ReportEnemyStreamReordered();
-        ReportEnemyEncodingState(enemy);
+        RefreshEnemyValidation();
     }
 
     public void ClearLevel()
@@ -459,9 +471,13 @@ public sealed class LevelCanvas : Control
         ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Information, "Level cleared", "All placed generators and enemies were removed. Use Undo to restore them.", null, false, false));
     }
 
-    private void ReportEnemyEncodingState(EnemyElement enemy)
+    public void RefreshEnemyValidation()
     {
-        if (_document is null) return;
+        if (_document is null)
+        {
+            PersistentActionFeedbackCleared?.Invoke();
+            return;
+        }
         var encoded = Smb3LevelCodec.EncodeEnemies(_document);
         if (!encoded.IsSuccess)
         {
@@ -470,8 +486,11 @@ public sealed class LevelCanvas : Control
         }
         if (encoded.Value!.Length > _document.OriginalEnemyLength)
         {
-            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Enemy stream grew", "This enemy needs relocation when you build. Export remains available only if legal bank space exists.", null, true, false));
+            var extraBytes = encoded.Value.Length - _document.OriginalEnemyLength;
+            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Enemy data is over capacity", $"This area needs {extraBytes} more enemy byte{(extraBytes == 1 ? string.Empty : "s")}. Remove or replace enemies before exporting.", null, true, true));
+            return;
         }
+        PersistentActionFeedbackCleared?.Invoke();
     }
 
     private void ReportEnemyStreamReordered() =>
@@ -624,6 +643,11 @@ public sealed class LevelCanvas : Control
             e.Handled = true;
             return;
         }
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && PlayerStartContains(point))
+        {
+            BeginPlayerStartDrag(e, point);
+            return;
+        }
 
         if (_document is not null && _selectedElement is int currentIndex &&
             _document.Elements.FirstOrDefault(item => item.Index == currentIndex) is { } current)
@@ -644,28 +668,29 @@ public sealed class LevelCanvas : Control
                     return;
                 }
             }
-            if (definition.CanResizeTop && ResizeTopHandle(currentBounds).Inflate(3).Contains(point))
+            if (definition.CanResizeTop && ResizeTopEdge(currentBounds).Contains(point))
             {
                 BeginDrag(e, point, current, DragOperation.ResizeTop);
                 return;
             }
-            if (definition.CanResizeRight && ResizeRightHandle(currentBounds).Inflate(3).Contains(point))
+            if (definition.CanResizeRight && ResizeRightEdge(currentBounds).Contains(point))
             {
                 BeginDrag(e, point, current, DragOperation.ResizeRight);
                 return;
             }
-            if (definition.CanResizeBottom && ResizeBottomHandle(currentBounds).Inflate(3).Contains(point))
+            if (definition.CanResizeBottom && ResizeBottomEdge(currentBounds).Contains(point))
             {
                 BeginDrag(e, point, current, DragOperation.ResizeBottom);
                 return;
             }
-            if (definition.CanResizeLeft && ResizeLeftHandle(currentBounds).Inflate(3).Contains(point))
+            if (definition.CanResizeLeft && ResizeLeftEdge(currentBounds).Contains(point))
             {
                 BeginDrag(e, point, current, DragOperation.ResizeLeft);
                 return;
             }
         }
 
+        _playerStartSelected = false;
         _selectedEnemy = _document?.Enemies
             .Where(item => EnemyContainsPoint(item, point) ||
                            (Math.Abs(item.X - tileX) <= 1 && Math.Abs(item.Y - tileY) <= 1))
@@ -745,6 +770,13 @@ public sealed class LevelCanvas : Control
             return;
         }
 
+        if (_draggingPlayerStart)
+        {
+            MovePlayerStart(point);
+            e.Handled = true;
+            return;
+        }
+
         var deltaX = (int)Math.Round(
             (point.X - _dragPointerStart.X) / _dragStartScaledTile,
             MidpointRounding.AwayFromZero);
@@ -774,6 +806,8 @@ public sealed class LevelCanvas : Control
                     _dragItemStartX + QuantizedDelta(deltaX, _dragResizeTilesPerStep) * _dragResizeTilesPerStep),
                 DragOperation.ResizeBottomRight => ResizeCorner(dragSource, elementIndex, definition,
                     QuantizedDelta(deltaX, _dragResizeTilesPerStep), QuantizedDelta(deltaY, _dragResizeTilesPerStep)),
+                DragOperation.ResizeTop when definition.TopResizePreservesBottom => ResizeTopPreservingBottom(
+                    dragSource, elementIndex, deltaY),
                 DragOperation.ResizeTop when definition.CanResizeBottom => ResizeVertical(
                     dragSource, elementIndex, definition, -QuantizedDelta(deltaY, _dragResizeTilesPerStep),
                     _dragItemStartY + QuantizedDelta(deltaY, _dragResizeTilesPerStep) * _dragResizeTilesPerStep),
@@ -839,6 +873,7 @@ public sealed class LevelCanvas : Control
         }
 
         _dragging = false;
+        _draggingPlayerStart = false;
         _dragOperation = DragOperation.None;
         _dragStartDocument = null;
         e.Pointer.Capture(null);
@@ -948,7 +983,7 @@ public sealed class LevelCanvas : Control
             ? _document.Header.ScreenCount * 15
             : 27;
         Width = Math.Max(720, columns * ScaledTile);
-        Height = rows * ScaledTile;
+        Height = (rows * ScaledTile) + BottomHandleGutter;
     }
 
     private bool UpdateRenderedLevel()
@@ -1045,6 +1080,10 @@ public sealed class LevelCanvas : Control
                 TryReadElementIndex(error.Code, out var index) ? index : null,
                 true,
                 true));
+        }
+        else
+        {
+            PersistentActionFeedbackCleared?.Invoke();
         }
     }
 
@@ -1145,6 +1184,122 @@ public sealed class LevelCanvas : Control
         InvalidateVisual();
     }
 
+    private Point PlayerStartPoint => _document is null
+        ? default
+        : new Point(
+            PlayerStartXCoordinates[_document.Header.PlayerStartX] * ScaledTile,
+            PlayerStartYCoordinates[_document.Header.PlayerStartY] * ScaledTile);
+
+    private Rect PlayerStartSpriteBounds
+    {
+        get
+        {
+            var anchor = PlayerStartPoint;
+            // SMB3 uses 8x16 hardware sprites. PF3E uses two of them on the
+            // lower OAM row, producing a 16x16 standing Small Mario.
+            return new Rect(anchor.X + (ScaledTile / 2), anchor.Y + ScaledTile, ScaledTile, ScaledTile);
+        }
+    }
+
+    private bool PlayerStartContains(Point point)
+    {
+        if (_document is null) return false;
+        return PlayerStartSpriteBounds.Inflate(Math.Max(5, ScaledTile * 0.3)).Contains(point);
+    }
+
+    private void DrawPlayerStart(DrawingContext context)
+    {
+        if (_document is null) return;
+        var bounds = PlayerStartSpriteBounds;
+        if (_smallMarioPixels is { Length: 256 })
+        {
+            var pixel = ScaledTile / TilePixels;
+            var colors = new[]
+            {
+                (Avalonia.Media.IBrush)Brushes.Transparent,
+                new SolidColorBrush(Color.FromUInt32(NesPalette.Argb[0x16])),
+                new SolidColorBrush(Color.FromUInt32(NesPalette.Argb[0x36])),
+                new SolidColorBrush(Color.FromUInt32(NesPalette.Argb[0x0F]))
+            };
+            for (var y = 0; y < 16; y++)
+            for (var x = 0; x < 16; x++)
+            {
+                // The editor start marker faces the direction of normal level
+                // entry (right) while retaining the ROM's Small Mario pixels.
+                var color = _smallMarioPixels[(y * 16) + (15 - x)];
+                if (color != 0) context.FillRectangle(colors[color], new Rect(bounds.X + (x * pixel), bounds.Y + (y * pixel), pixel, pixel));
+            }
+        }
+        else
+        {
+            context.FillRectangle(new SolidColorBrush(Color.Parse("#D94841")), new Rect(bounds.X, bounds.Y, bounds.Width, bounds.Height * 0.3));
+            context.FillRectangle(new SolidColorBrush(Color.Parse("#3E72C4")), new Rect(bounds.X, bounds.Y + (bounds.Height * 0.55), bounds.Width, bounds.Height * 0.45));
+        }
+        context.DrawRectangle(null, new Pen(_playerStartSelected ? Brushes.White : new SolidColorBrush(Color.Parse("#F6D365")), _playerStartSelected ? 2 : 1), bounds.Inflate(2));
+    }
+
+    private void BeginPlayerStartDrag(PointerPressedEventArgs e, Point point)
+    {
+        if (_document is null) return;
+        _playerStartSelected = true;
+        _selectedElement = null;
+        _selectedEnemy = null;
+        _dragging = true;
+        _draggingPlayerStart = true;
+        _dragStartDocument = _document;
+        _dragPointerStart = point;
+        _dragStartScaledTile = ScaledTile;
+        e.Pointer.Capture(this);
+        NotifySelectionChanged();
+        InvalidateVisual();
+        e.Handled = true;
+    }
+
+    private void MovePlayerStart(Point point)
+    {
+        if (_document is null) return;
+        var logicalX = (point.X / ScaledTile) - 0.5;
+        var logicalY = (point.Y / ScaledTile) - 1;
+        var x = ClosestPlayerStartIndex(PlayerStartXCoordinates, logicalX);
+        var y = ClosestPlayerStartIndex(PlayerStartYCoordinates, logicalY);
+        var header = _document.Header.WithPlayerStart(x, y);
+        if (header == _document.Header) return;
+        _document = _document with { Header = header };
+        InvalidateVisual();
+    }
+
+    private static int ClosestPlayerStartIndex(IReadOnlyList<double> values, double value) =>
+        Enumerable.Range(0, values.Count).MinBy(index => Math.Abs(values[index] - value));
+
+    private void LoadSmallMarioSprite()
+    {
+        _smallMarioPixels = null;
+        if (_rom is null) return;
+        const int smallMarioStandingPage = 0x53;
+        // PF3E is the idle Small Mario frame. Each OAM pattern is an 8x16
+        // sprite: $05 maps to CHR tiles $04/$05 and $07 maps to $06/$07.
+        var sprite = new byte[16 * 16];
+        var tiles = new[,]
+        {
+            { 0x04, 0x06 },
+            { 0x05, 0x07 }
+        };
+        for (var row = 0; row < 2; row++)
+        for (var column = 0; column < 2; column++)
+        {
+            var offset = (smallMarioStandingPage * 0x400) + (tiles[row, column] * ChrTileDecoder.BytesPerTile);
+            if (offset > _rom.Chr.Length - ChrTileDecoder.BytesPerTile) return;
+            var decoded = ChrTileDecoder.DecodeTile(_rom.Chr.Slice(offset, ChrTileDecoder.BytesPerTile), 0);
+            if (!decoded.IsSuccess) return;
+            for (var y = 0; y < 8; y++)
+            for (var x = 0; x < 8; x++)
+            {
+                sprite[((row * 8 + y) * 16) + (column * 8 + x)] = decoded.Value![(y * 8) + x];
+            }
+        }
+        _smallMarioPixels = sprite;
+    }
+
     private bool EnemyContainsPoint(EnemyElement enemy, Point point)
     {
         var snapshot = _renderSnapshot;
@@ -1171,6 +1326,19 @@ public sealed class LevelCanvas : Control
 
         var tileX = (int)(point.X / ScaledTile);
         var tileY = (int)(point.Y / ScaledTile);
+        if (PlayerStartContains(point))
+        {
+            var startTip = $"Mario start\nX: {PlayerStartXCoordinates[_document.Header.PlayerStartX]:0.##} tiles\nY: {PlayerStartYCoordinates[_document.Header.PlayerStartY]:0} tiles\nDrag to one of SMB3's available start positions.";
+            if (startTip != _hoverTip)
+            {
+                _hoverTimer.Stop();
+                ToolTip.SetIsOpen(this, false);
+                _hoverTip = startTip;
+                ToolTip.SetTip(this, startTip);
+                _hoverTimer.Start();
+            }
+            return;
+        }
         var enemy = _document.Enemies.LastOrDefault(item =>
             EnemyContainsPoint(item, point) ||
             (!Smb3LevelRenderer.HasEnemyPreview(item.Id) &&
@@ -1211,7 +1379,11 @@ public sealed class LevelCanvas : Control
     private void UpdateCursor(Point point)
     {
         var type = StandardCursorType.Arrow;
-        if (_document is not null && _selectedElement is int index &&
+        if (PlayerStartContains(point))
+        {
+            type = StandardCursorType.SizeAll;
+        }
+        else if (_document is not null && _selectedElement is int index &&
             _document.Elements.FirstOrDefault(item => item.Index == index) is { } element)
         {
             var definition = GetEffectiveDefinition(element);
@@ -1221,19 +1393,19 @@ public sealed class LevelCanvas : Control
             {
                 type = StandardCursorType.SizeAll;
             }
-            else if (definition.CanResizeTop && ResizeTopHandle(rect).Inflate(3).Contains(point))
+            else if (definition.CanResizeTop && ResizeTopEdge(rect).Contains(point))
             {
                 type = StandardCursorType.SizeNorthSouth;
             }
-            else if (definition.CanResizeRight && ResizeRightHandle(rect).Inflate(3).Contains(point))
+            else if (definition.CanResizeRight && ResizeRightEdge(rect).Contains(point))
             {
                 type = StandardCursorType.SizeWestEast;
             }
-            else if (definition.CanResizeBottom && ResizeBottomHandle(rect).Inflate(3).Contains(point))
+            else if (definition.CanResizeBottom && ResizeBottomEdge(rect).Contains(point))
             {
                 type = StandardCursorType.SizeNorthSouth;
             }
-            else if (definition.CanResizeLeft && ResizeLeftHandle(rect).Inflate(3).Contains(point))
+            else if (definition.CanResizeLeft && ResizeLeftEdge(rect).Contains(point))
             {
                 type = StandardCursorType.SizeWestEast;
             }
@@ -1250,7 +1422,11 @@ public sealed class LevelCanvas : Control
     private void NotifySelectionChanged()
     {
         if (_document is null) return;
-        if (_selectedElement is int elementIndex && _document.Elements.FirstOrDefault(item => item.Index == elementIndex) is { } element)
+        if (_playerStartSelected)
+        {
+            SelectionDescriptionChanged?.Invoke($"Mario start\nX: {PlayerStartXCoordinates[_document.Header.PlayerStartX]:0.##} tiles\nY: {PlayerStartYCoordinates[_document.Header.PlayerStartY]:0} tiles");
+        }
+        else if (_selectedElement is int elementIndex && _document.Elements.FirstOrDefault(item => item.Index == elementIndex) is { } element)
         {
             var definition = GetEffectiveDefinition(element);
             var step = definition.CanResizeRight
@@ -1259,7 +1435,14 @@ public sealed class LevelCanvas : Control
                     ? MeasureResizeStep(element, DragOperation.ResizeBottom)
                     : 1;
             var stepText = step > 1 ? $"\nResize step: {step} tiles" : string.Empty;
-            SelectionDescriptionChanged?.Invoke($"{ObjectCatalogNames.Describe(_document.Tileset, element)}\nConstraint: {definition.Constraint}\nSize parameter: {element.Parameter}{stepText}");
+            var minimumShape = GeneratorDefaults.Parameter(_document.Tileset, element.GeneratorId);
+            var minimumExtra = definition.HorizontalSizeUsesExtraParameter
+                ? GeneratorDefaults.ClampExtraParameter(_document.Tileset, element.GeneratorId, 0)
+                : 0;
+            var minimumText = minimumShape > 0 || minimumExtra > 0
+                ? $"\nMinimum vanilla size: {Math.Max(minimumShape, minimumExtra)} (smaller values wrap into a giant object)"
+                : string.Empty;
+            SelectionDescriptionChanged?.Invoke($"{ObjectCatalogNames.Describe(_document.Tileset, element)}\nConstraint: {definition.Constraint}\nSize parameter: {element.Parameter}{stepText}{minimumText}");
         }
         else if (_selectedEnemy is int enemyIndex && _document.Enemies.FirstOrDefault(item => item.Index == enemyIndex) is { } enemy)
         {
@@ -1295,11 +1478,15 @@ public sealed class LevelCanvas : Control
         _dragItemStartY = element.Y;
         _dragStartParameter = element.Parameter;
         _dragStartExtraParameter = element.ExtraParameter ?? 0;
-        _dragResizeTilesPerStep = operation is DragOperation.ResizeTopLeft or DragOperation.ResizeTopRight or DragOperation.ResizeBottomLeft or DragOperation.ResizeBottomRight
-            ? Math.Max(MeasureResizeStep(element, DragOperation.ResizeRight), MeasureResizeStep(element, DragOperation.ResizeBottom))
-            : operation is DragOperation.ResizeRight or DragOperation.ResizeTop or DragOperation.ResizeBottom or DragOperation.ResizeLeft
-                ? MeasureResizeStep(element, operation)
-            : 1;
+        _dragStartRenderedBottom = GetElementBounds(element).Bottom;
+        var definition = GetEffectiveDefinition(element);
+        _dragResizeTilesPerStep = operation == DragOperation.ResizeTop && definition.TopResizePreservesBottom
+            ? 1
+            : operation is DragOperation.ResizeTopLeft or DragOperation.ResizeTopRight or DragOperation.ResizeBottomLeft or DragOperation.ResizeBottomRight
+                ? Math.Max(MeasureResizeStep(element, DragOperation.ResizeRight), MeasureResizeStep(element, DragOperation.ResizeBottom))
+                : operation is DragOperation.ResizeRight or DragOperation.ResizeTop or DragOperation.ResizeBottom or DragOperation.ResizeLeft
+                    ? MeasureResizeStep(element, operation)
+                    : 1;
         e.Pointer.Capture(this);
         e.Handled = true;
     }
@@ -1315,6 +1502,10 @@ public sealed class LevelCanvas : Control
     private static Rect ResizeRightHandle(Rect bounds) => new(bounds.Right - 5, bounds.Center.Y - 5, 10, 10);
     private static Rect ResizeBottomHandle(Rect bounds) => new(bounds.Center.X - 5, bounds.Bottom - 5, 10, 10);
     private static Rect ResizeLeftHandle(Rect bounds) => new(bounds.Left - 5, bounds.Center.Y - 5, 10, 10);
+    private static Rect ResizeTopEdge(Rect bounds) => new(bounds.Left, bounds.Top - 6, bounds.Width, 12);
+    private static Rect ResizeRightEdge(Rect bounds) => new(bounds.Right - 6, bounds.Top, 12, bounds.Height);
+    private static Rect ResizeBottomEdge(Rect bounds) => new(bounds.Left, bounds.Bottom - 6, bounds.Width, 12);
+    private static Rect ResizeLeftEdge(Rect bounds) => new(bounds.Left - 6, bounds.Top, 12, bounds.Height);
     private static Rect[] ResizeCornerHandles(Rect bounds) =>
     [
         new(bounds.Left - 5, bounds.Top - 5, 10, 10), new(bounds.Right - 5, bounds.Top - 5, 10, 10),
@@ -1328,9 +1519,11 @@ public sealed class LevelCanvas : Control
         var horizontal = operation is DragOperation.ResizeRight or DragOperation.ResizeLeft;
         var usesExtra = horizontal && definition.HorizontalSizeUsesExtraParameter ||
                         !horizontal && definition.VerticalSizeUsesExtraParameter;
+        var delta = SafeProbeDelta(_document, element, usesExtra);
+        if (delta == 0) return 1;
         var candidate = usesExtra
-            ? _document.ResizeElement(element.Index, extraParameter: (element.ExtraParameter ?? 0) + ((element.ExtraParameter ?? 0) < 255 ? 1 : -1))
-            : _document.ResizeElement(element.Index, parameter: element.Parameter + (element.Parameter < 15 ? 1 : -1));
+            ? _document.ResizeElement(element.Index, extraParameter: (element.ExtraParameter ?? 0) + delta)
+            : _document.ResizeElement(element.Index, parameter: element.Parameter + delta);
         var rendered = _renderer.Render(_rom, candidate);
         if (!rendered.IsSuccess ||
             !_renderSnapshot.ElementBounds.TryGetValue(element.Index, out var before) ||
@@ -1343,6 +1536,29 @@ public sealed class LevelCanvas : Control
 
     private static int QuantizedDelta(int tileDelta, int tilesPerStep) =>
         (int)Math.Round((double)tileDelta / Math.Max(1, tilesPerStep), MidpointRounding.AwayFromZero);
+
+    private static int SafeProbeDelta(LevelDocument document, LevelElement element, bool extra)
+    {
+        var current = extra ? element.ExtraParameter ?? 0 : element.Parameter;
+        var minimum = extra
+            ? GeneratorDefaults.ClampExtraParameter(document.Tileset, element.GeneratorId, 0)
+            : GeneratorDefaults.Parameter(document.Tileset, element.GeneratorId);
+        return current > minimum ? -1 : current < (extra ? 255 : 15) ? 1 : 0;
+    }
+
+    private LevelDocument ResizeTopPreservingBottom(LevelDocument source, int index, int topDelta)
+    {
+        var element = source.Elements.FirstOrDefault(item => item.Index == index);
+        if (element is null) return source;
+
+        // The pointer edits the visual top edge directly. This matters for
+        // rectangles already touching the lower boundary: their encoded Y
+        // anchor and rendered bounds can differ after previous edits.
+        var top = Math.Clamp(_dragItemStartY + (topDelta * _dragResizeTilesPerStep), 0, _dragStartRenderedBottom - 1);
+        var parameter = GeneratorDefaults.ClampParameter(source.Tileset, element.GeneratorId, _dragStartRenderedBottom - top - 1);
+        return source.ResizeElement(index, top: top, parameter: parameter);
+    }
+
 
     private GeneratorDefinition GetEffectiveDefinition(LevelElement element)
     {
@@ -1378,9 +1594,11 @@ public sealed class LevelCanvas : Control
     private (int Width, int Height) MeasureParameterEffect(LevelElement element, bool extra)
     {
         if (_rom is null || _document is null || _renderSnapshot is null) return (0, 0);
+        var delta = SafeProbeDelta(_document, element, extra);
+        if (delta == 0) return (0, 0);
         var candidate = extra
-            ? _document.ResizeElement(element.Index, extraParameter: (element.ExtraParameter ?? 0) + ((element.ExtraParameter ?? 0) < 255 ? 1 : -1))
-            : _document.ResizeElement(element.Index, parameter: element.Parameter + (element.Parameter < 15 ? 1 : -1));
+            ? _document.ResizeElement(element.Index, extraParameter: (element.ExtraParameter ?? 0) + delta)
+            : _document.ResizeElement(element.Index, parameter: element.Parameter + delta);
         var rendered = _renderer.Render(_rom, candidate);
         if (!rendered.IsSuccess || !_renderSnapshot.ElementBounds.TryGetValue(element.Index, out var before) ||
             !rendered.Value!.ElementBounds.TryGetValue(element.Index, out var after)) return (0, 0);
@@ -1401,7 +1619,7 @@ public sealed class LevelCanvas : Control
     {
         var element = source.Elements.FirstOrDefault(item => item.Index == index);
         if (element is null) return source;
-        var parameter = Math.Clamp(element.Parameter + delta, 0, 15);
+        var parameter = GeneratorDefaults.ClampParameter(source.Tileset, element.GeneratorId, element.Parameter + delta);
         return parameter == element.Parameter
             ? source
             : source.ResizeElement(index, parameter: parameter, left: left);
@@ -1411,7 +1629,7 @@ public sealed class LevelCanvas : Control
     {
         var element = source.Elements.FirstOrDefault(item => item.Index == index);
         if (element is null || element.ExtraParameter is not byte extra) return source;
-        var value = Math.Clamp(extra + delta, 0, 255);
+        var value = GeneratorDefaults.ClampExtraParameter(source.Tileset, element.GeneratorId, extra + delta);
         return value == extra
             ? source
             : source.ResizeElement(index, extraParameter: value, left: left);
@@ -1421,7 +1639,7 @@ public sealed class LevelCanvas : Control
     {
         var element = source.Elements.FirstOrDefault(item => item.Index == index);
         if (element is null) return source;
-        var parameter = Math.Clamp(element.Parameter + delta, 0, 15);
+        var parameter = GeneratorDefaults.ClampParameter(source.Tileset, element.GeneratorId, element.Parameter + delta);
         return parameter == element.Parameter
             ? source
             : source.ResizeElement(index, parameter: parameter, top: top);
@@ -1431,7 +1649,7 @@ public sealed class LevelCanvas : Control
     {
         var element = source.Elements.FirstOrDefault(item => item.Index == index);
         if (element is null || element.ExtraParameter is not byte extra) return source;
-        var value = Math.Clamp(extra + delta, 0, 255);
+        var value = GeneratorDefaults.ClampExtraParameter(source.Tileset, element.GeneratorId, extra + delta);
         return value == extra
             ? source
             : source.ResizeElement(index, extraParameter: value, top: top);

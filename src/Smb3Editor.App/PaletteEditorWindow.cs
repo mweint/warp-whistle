@@ -23,18 +23,18 @@ public sealed class PaletteEditorWindow : Window
     private readonly Action<IReadOnlyList<PaletteSlotInfo>> _preview;
     private readonly Action<IReadOnlyList<PaletteSlotInfo>> _commit;
     private readonly Action _cancel;
-    private readonly ComboBox _kindBox = new();
-    private readonly ComboBox _slotBox = new();
-    private readonly UniformGrid _paletteColors = new() { Columns = 4, Rows = 4, Width = 192, Height = 192 };
-    private readonly UniformGrid _nesColors = new() { Columns = 16, Rows = 4, Width = 384, Height = 96 };
-    private readonly TextBox _nameBox = new();
+    private readonly ComboBox _backgroundSlotBox = new();
+    private readonly ComboBox _objectSlotBox = new();
+    private readonly UniformGrid _backgroundColors = new() { Columns = 4, Rows = 4, Width = 88, Height = 88 };
+    private readonly UniformGrid _objectColors = new() { Columns = 4, Rows = 4, Width = 88, Height = 88 };
     private readonly TextBox _libraryName = new();
     private readonly ComboBox _libraryBox = new();
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap };
-    private readonly Button _undoButton = new() { Content = "Undo", MinWidth = 72 };
-    private readonly Button _redoButton = new() { Content = "Redo", MinWidth = 72 };
+    private Popup? _colorPickerPopup;
     private bool _objects;
     private int _slot;
+    private int _backgroundSlot;
+    private int _objectSlot;
     private int _colorIndex;
     private bool _refreshing;
     private bool _saved;
@@ -55,105 +55,60 @@ public sealed class PaletteEditorWindow : Window
         _commit = commit;
         _cancel = cancel;
         Title = "Palette Editor";
-        Width = 980;
-        Height = 620;
-        MinWidth = 820;
-        MinHeight = 480;
+        Width = 240;
+        Height = 370;
+        MinWidth = 230;
+        MinHeight = 350;
+        _libraryName.Width = 130;
+        _libraryName.PlaceholderText = "Name to save";
+        _libraryBox.Width = 150;
 
-        _kindBox.ItemsSource = new[] { "Background palettes (8 slots)", "Object / sprite palettes (4 slots)" };
-        _slotBox.ItemTemplate = new FuncDataTemplate<PaletteSlotInfo>((item, _) => item is null
-            ? new TextBlock()
-            : PaletteRow(item.ToString(), item.Colors));
+        ConfigurePaletteSelector(_backgroundSlotBox);
+        ConfigurePaletteSelector(_objectSlotBox);
         _libraryBox.ItemTemplate = new FuncDataTemplate<SavedPalette>((item, _) => item is null
             ? new TextBlock()
             : PaletteRow(item.Name, item.Colors));
-        _kindBox.SelectedIndex = 0;
-        _kindBox.SelectionChanged += (_, _) => { if (!_refreshing) { _objects = _kindBox.SelectedIndex == 1; _slot = 0; RefreshFromHost(); } };
-        _slotBox.SelectionChanged += (_, _) => { if (!_refreshing && _slotBox.SelectedItem is PaletteSlotInfo info) { _slot = info.Slot; RefreshFromHost(); } };
-        _nameBox.LostFocus += (_, _) => UpdateName();
-        _nameBox.KeyDown += (_, e) => { if (e.Key == Avalonia.Input.Key.Enter) UpdateName(); };
+        _backgroundSlotBox.SelectionChanged += (_, _) =>
+        {
+            if (!_refreshing && _backgroundSlotBox.SelectedItem is PaletteSlotInfo info)
+            {
+                _backgroundSlot = info.Slot;
+                ActivatePalette(false, _backgroundSlot, 0);
+            }
+        };
+        _objectSlotBox.SelectionChanged += (_, _) =>
+        {
+            if (!_refreshing && _objectSlotBox.SelectedItem is PaletteSlotInfo info)
+            {
+                _objectSlot = info.Slot;
+                ActivatePalette(true, _objectSlot, 0);
+            }
+        };
         KeyDown += PaletteEditorWindow_KeyDown;
 
         var root = new Grid
         {
-            RowDefinitions = new RowDefinitions("Auto,*,Auto"),
-            Margin = new Thickness(16),
-            RowSpacing = 12
+            RowDefinitions = new RowDefinitions("*,Auto"),
+            Margin = new Thickness(12),
+            RowSpacing = 8
         };
-        root.Children.Add(new StackPanel
-        {
-            Spacing = 5,
-            Children =
-            {
-                new TextBlock { Text = "Palette Editor", FontSize = 20, FontWeight = FontWeight.SemiBold },
-                new TextBlock { Text = "Changes update the level immediately. A slot is shared by every level using that tileset slot.", TextWrapping = TextWrapping.Wrap },
-                _kindBox
-            }
-        });
-
-        var content = new Grid { ColumnDefinitions = new ColumnDefinitions("404,*,220"), ColumnSpacing = 18 };
-        Grid.SetRow(content, 1);
-        content.Children.Add(new StackPanel
-        {
-            Spacing = 6,
-            Children =
-            {
-                new TextBlock { Text = "NES color picker", FontWeight = FontWeight.SemiBold },
-                new TextBlock { Text = "Select a palette chip, then choose a NES color.", TextWrapping = TextWrapping.Wrap, FontSize = 12 },
-                ColorGridBorder(_nesColors)
-            }
-        });
-
-        var editor = new StackPanel { Spacing = 9 };
-        Grid.SetColumn(editor, 1);
-        editor.Children.Add(new TextBlock { Text = "Palette", FontWeight = FontWeight.SemiBold });
-        editor.Children.Add(_slotBox);
-        editor.Children.Add(new TextBlock { Text = "Slot name (project-only)", FontWeight = FontWeight.SemiBold });
-        editor.Children.Add(_nameBox);
-        editor.Children.Add(_status);
-        editor.Children.Add(new TextBlock { Text = "Palette colors", FontWeight = FontWeight.SemiBold, Margin = new Thickness(0, 8, 0, 0) });
-        editor.Children.Add(ColorGridBorder(_paletteColors));
-        content.Children.Add(editor);
-
-        var library = new StackPanel { Spacing = 7 };
-        Grid.SetColumn(library, 2);
-        library.Children.Add(new TextBlock { Text = "Palette library", FontWeight = FontWeight.SemiBold });
-        library.Children.Add(new TextBlock { Text = "Saved palettes are local; they do not consume ROM slots.", TextWrapping = TextWrapping.Wrap, FontSize = 12 });
-        library.Children.Add(_libraryBox);
-        library.Children.Add(new TextBlock { Text = "Library name" });
-        library.Children.Add(_libraryName);
-        var save = new Button { Content = "Save to Library" };
-        save.Click += SaveToLibrary_Click;
-        var apply = new Button { Content = "Apply Selected" };
-        apply.Click += ApplyLibrary_Click;
-        var remove = new Button { Content = "Remove Selected" };
-        remove.Click += RemoveLibrary_Click;
-        var reset = new Button { Content = "Reset Slot to Stock" };
-        reset.Click += ResetToStock_Click;
-        library.Children.Add(save);
-        library.Children.Add(apply);
-        library.Children.Add(remove);
-        library.Children.Add(reset);
-        content.Children.Add(library);
-
+        var content = new StackPanel { Spacing = 10 };
+        content.Children.Add(PalettePanel("Background palette", _backgroundSlotBox, _backgroundColors));
+        content.Children.Add(PalettePanel("Object / sprite palette", _objectSlotBox, _objectColors));
         root.Children.Add(content);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Spacing = 8 };
-        _undoButton.Click += (_, _) => UndoDraft();
-        _redoButton.Click += (_, _) => RedoDraft();
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Spacing = 5 };
         var cancelButton = new Button { Content = "Cancel", MinWidth = 90 };
         cancelButton.Click += (_, _) => Close();
-        var saveButton = new Button { Content = "Save changes", MinWidth = 110 };
+        var saveButton = new Button { Content = "💾", Width = 34 };
+        ToolTip.SetTip(saveButton, "Save changes");
         saveButton.Click += (_, _) => { _commit(_drafts.Values.ToArray()); _saved = true; Close(); };
-        actions.Children.Add(_undoButton);
-        actions.Children.Add(_redoButton);
         actions.Children.Add(cancelButton);
         actions.Children.Add(saveButton);
-        Grid.SetRow(actions, 2);
+        Grid.SetRow(actions, 1);
         root.Children.Add(actions);
         Content = root;
-        BuildNesColorGrid();
         RefreshFromHost();
-        UpdateUndoButtons();
     }
 
     protected override void OnClosing(WindowClosingEventArgs e)
@@ -165,57 +120,109 @@ public sealed class PaletteEditorWindow : Window
     public void RefreshFromHost()
     {
         _refreshing = true;
-        _kindBox.SelectedIndex = _objects ? 1 : 0;
-        var count = _objects ? 4 : 8;
-        var slots = Enumerable.Range(0, count).Select(slot => GetCurrentSlot(_objects, slot)).Where(static item => item is not null).Cast<PaletteSlotInfo>().ToArray();
-        _slotBox.ItemsSource = slots;
-        _slotBox.SelectedItem = slots.FirstOrDefault(item => item.Slot == _slot) ?? slots.FirstOrDefault();
-        var current = GetCurrentSlot(_objects, _slot) ?? slots.FirstOrDefault();
-        if (current is not null)
-        {
-            _slot = current.Slot;
-            _nameBox.Text = current.Name;
-            _status.Text = $"{(current.IsModified ? "Modified in this project" : "Stock ROM palette")} - slot {current.Slot + 1} of {count}.";
-            BuildPaletteColors(current.Colors);
-        }
-        RefreshLibrary();
+        var backgrounds = Slots(false, 8);
+        var objects = Slots(true, 4);
+        _backgroundSlot = SelectSlot(_backgroundSlotBox, backgrounds, _backgroundSlot);
+        _objectSlot = SelectSlot(_objectSlotBox, objects, _objectSlot);
+        BuildPaletteColors(_backgroundColors, false, _backgroundSlot);
+        BuildPaletteColors(_objectColors, true, _objectSlot);
+        RefreshActiveDetails();
         _refreshing = false;
     }
 
-    private void BuildPaletteColors(IReadOnlyList<byte> colors)
+    private static void ConfigurePaletteSelector(ComboBox selector)
     {
-        _paletteColors.Children.Clear();
+        // Keep the selected value compact; the expanded list retains its
+        // color preview to make palette selection visual.
+        selector.SelectionBoxItemTemplate = new FuncDataTemplate<PaletteSlotInfo>((item, _) => new TextBlock { Text = item?.ToString() ?? string.Empty });
+        selector.ItemTemplate = new FuncDataTemplate<PaletteSlotInfo>((item, _) => item is null
+            ? new TextBlock()
+            : PaletteRow(item.ToString(), item.Colors));
+    }
+
+    private static StackPanel PalettePanel(string title, ComboBox selector, UniformGrid colors) => new()
+    {
+        Spacing = 5,
+        Children =
+        {
+            new TextBlock { Text = title, FontWeight = FontWeight.SemiBold },
+            selector,
+            ColorGridBorder(colors)
+        }
+    };
+
+    private PaletteSlotInfo[] Slots(bool objects, int count) =>
+        Enumerable.Range(0, count).Select(slot => GetCurrentSlot(objects, slot)).Where(static item => item is not null).Cast<PaletteSlotInfo>().ToArray();
+
+    private static int SelectSlot(ComboBox selector, PaletteSlotInfo[] slots, int preferredSlot)
+    {
+        var selected = slots.FirstOrDefault(item => item.Slot == preferredSlot) ?? slots.FirstOrDefault();
+        selector.ItemsSource = slots;
+        selector.SelectedItem = selected;
+        return selected?.Slot ?? 0;
+    }
+
+    private void BuildPaletteColors(UniformGrid grid, bool objects, int slot)
+    {
+        grid.Children.Clear();
+        var colors = GetCurrentSlot(objects, slot)?.Colors ?? [];
         for (var index = 0; index < 16; index++)
         {
             var color = index < colors.Count ? colors[index] : (byte)0;
+            var isSelected = objects == _objects && slot == _slot && index == _colorIndex;
             var chip = new Border
             {
                 Background = Brush(color),
-                BorderBrush = index == _colorIndex ? Brushes.White : new SolidColorBrush(Color.Parse("#3A4655")),
-                BorderThickness = new Thickness(index == _colorIndex ? 2 : 1)
+                BorderBrush = isSelected ? Brushes.White : new SolidColorBrush(Color.Parse("#3A4655")),
+                BorderThickness = new Thickness(isSelected ? 2 : 1)
             };
             ToolTip.SetTip(chip, $"Color {index + 1}: ${color:X2}");
             var selected = index;
-            chip.PointerPressed += (_, _) => { _colorIndex = selected; BuildPaletteColors(GetCurrentSlot(_objects, _slot)?.Colors ?? []); };
-            _paletteColors.Children.Add(chip);
+            chip.PointerPressed += (_, _) => OpenColorPicker(chip, objects, slot, selected);
+            grid.Children.Add(chip);
         }
     }
 
-    private void BuildNesColorGrid()
+    private void OpenColorPicker(Control anchor, bool objects, int slot, int colorIndex)
     {
-        for (byte color = 0; color < 64; color++)
+        // Do not refresh here: it would replace the clicked chip before the
+        // popup can use it as an anchor, causing Avalonia to dismiss it.
+        _objects = objects;
+        _slot = slot;
+        _colorIndex = colorIndex;
+        var current = GetCurrentSlot(objects, slot);
+        var selectedColor = current is not null && colorIndex < current.Colors.Count ? current.Colors[colorIndex] : (byte)0;
+        _colorPickerPopup?.IsOpen = false;
+        Popup? popup = null;
+        popup = new Popup
         {
-            var value = color;
-            var chip = new Border
+            PlacementTarget = anchor,
+            Placement = PlacementMode.Bottom,
+            IsLightDismissEnabled = true,
+            Child = new NesColorPickerPopup(selectedColor, value =>
             {
-                Background = Brush(value),
-                BorderBrush = new SolidColorBrush(Color.Parse("#3A4655")),
-                BorderThickness = new Thickness(1)
-            };
-            ToolTip.SetTip(chip, $"NES ${value:X2}");
-            chip.PointerPressed += (_, _) => SetColor(value);
-            _nesColors.Children.Add(chip);
-        }
+                SetColor(value);
+                popup!.IsOpen = false;
+            })
+        };
+        _colorPickerPopup = popup;
+        popup.IsOpen = true;
+    }
+
+    private void ActivatePalette(bool objects, int slot, int colorIndex)
+    {
+        _objects = objects;
+        _slot = slot;
+        _colorIndex = colorIndex;
+        RefreshFromHost();
+    }
+
+    private void RefreshActiveDetails()
+    {
+        var current = GetCurrentSlot(_objects, _slot);
+        if (current is null) return;
+        _status.Text = $"{(_objects ? "Object" : "Background")} slot {current.Slot + 1} of {(_objects ? 4 : 8)} — {(current.IsModified ? "modified" : "stock")}.";
+        RefreshLibrary();
     }
 
     private void SetColor(byte value)
@@ -225,15 +232,6 @@ public sealed class PaletteEditorWindow : Window
         var colors = current.Colors.Take(16).Concat(Enumerable.Repeat((byte)0, 16)).Take(16).ToArray();
         colors[_colorIndex] = value;
         SetDraft(current with { Colors = colors, IsModified = true });
-        RefreshFromHost();
-    }
-
-    private void UpdateName()
-    {
-        if (_refreshing) return;
-        var current = GetCurrentSlot(_objects, _slot);
-        if (current is null) return;
-        SetDraft(current with { Name = (_nameBox.Text ?? string.Empty).Trim() });
         RefreshFromHost();
     }
 
@@ -269,8 +267,7 @@ public sealed class PaletteEditorWindow : Window
 
     private void RemoveLibrary_Click(object? sender, RoutedEventArgs e)
     {
-        if (_libraryBox.SelectedItem is not SavedPalette palette) return;
-        if (palette.IsBuiltIn) return;
+        if (_libraryBox.SelectedItem is not SavedPalette palette || palette.IsBuiltIn) return;
         var loaded = PaletteLibraryStore.Load();
         if (!loaded.IsSuccess) return;
         PaletteLibraryStore.Save(loaded.Value!.Where(item => !(item.Objects == palette.Objects && string.Equals(item.Name, palette.Name, StringComparison.OrdinalIgnoreCase))).ToArray());
@@ -296,7 +293,6 @@ public sealed class PaletteEditorWindow : Window
         _redo.Clear();
         _drafts[(slot.Objects, slot.Slot)] = slot;
         _preview(_drafts.Values.ToArray());
-        UpdateUndoButtons();
     }
 
     private void UndoDraft()
@@ -319,17 +315,10 @@ public sealed class PaletteEditorWindow : Window
         foreach (var (key, value) in drafts) _drafts[key] = value;
         _preview(_drafts.Values.ToArray());
         RefreshFromHost();
-        UpdateUndoButtons();
     }
 
     private Dictionary<(bool Objects, int Slot), PaletteSlotInfo> CloneDrafts() =>
         _drafts.ToDictionary(static pair => pair.Key, static pair => pair.Value with { Colors = pair.Value.Colors.ToArray() });
-
-    private void UpdateUndoButtons()
-    {
-        _undoButton.IsEnabled = _undo.Count > 0;
-        _redoButton.IsEnabled = _redo.Count > 0;
-    }
 
     private void PaletteEditorWindow_KeyDown(object? sender, KeyEventArgs e)
     {
@@ -358,8 +347,43 @@ public sealed class PaletteEditorWindow : Window
     private static Control PaletteRow(string label, IReadOnlyList<byte> colors)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
-        row.Children.Add(new TextBlock { Text = label, MinWidth = 105, VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(new TextBlock { Text = label, MinWidth = 92, VerticalAlignment = VerticalAlignment.Center });
         row.Children.Add(new PalettePreview { Colors = PalettePreview.FromNesColors(colors) });
         return row;
+    }
+}
+
+internal sealed class NesColorPickerPopup : Border
+{
+    public NesColorPickerPopup(byte selectedColor, Action<byte> select)
+    {
+        Background = new SolidColorBrush(Color.Parse("#172231"));
+        BorderBrush = new SolidColorBrush(Color.Parse("#718399"));
+        BorderThickness = new Thickness(1);
+        Padding = new Thickness(8);
+        // NES palette bytes are arranged as four brightness rows of sixteen hues.
+        // Keeping that native order makes related colors easy to scan and compare.
+        var colors = new UniformGrid { Columns = 16, Rows = 4, Width = 320, Height = 80 };
+        for (byte color = 0; color < 64; color++)
+        {
+            var value = color;
+            var chip = new Border
+            {
+                Background = new SolidColorBrush(Color.FromUInt32(NesPalette.Argb[value & 0x3F])),
+                BorderBrush = value == selectedColor ? Brushes.White : new SolidColorBrush(Color.Parse("#3A4655")),
+                BorderThickness = new Thickness(value == selectedColor ? 2 : 1)
+            };
+            ToolTip.SetTip(chip, $"NES ${value:X2}");
+            chip.PointerPressed += (_, _) => select(value);
+            colors.Children.Add(chip);
+        }
+        Child = new StackPanel
+        {
+            Spacing = 4,
+            Children =
+            {
+                new Border { BorderBrush = new SolidColorBrush(Color.Parse("#718399")), BorderThickness = new Thickness(1), Child = colors }
+            }
+        };
     }
 }

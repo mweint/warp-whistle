@@ -117,24 +117,29 @@
             <Border Background="#111923" Padding="2">
               <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
                 <TextBox x:Name="CatalogSearchBox" PlaceholderText="Search objects and enemies" TextChanged="CatalogFilterChanged" />
-                <ComboBox x:Name="CatalogTypeBox" Grid.Row="1" SelectedIndex="0" SelectionChanged="CatalogFilterChanged">
-                  <ComboBoxItem Content="All items" />
-                  <ComboBoxItem Content="Objects" />
-                  <ComboBoxItem Content="Enemies" />
-                </ComboBox>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="3">
+                  <ToggleButton x:Name="CatalogAllFilter" Tag="0" Content="All" IsChecked="True" Padding="7,2" Click="CatalogFilterTab_Click" />
+                  <ToggleButton x:Name="CatalogObjectsFilter" Tag="1" Content="Objects" Padding="7,2" Click="CatalogFilterTab_Click" />
+                  <ToggleButton x:Name="CatalogEnemiesFilter" Tag="2" Content="Enemies" Padding="7,2" Click="CatalogFilterTab_Click" />
+                  <ToggleButton x:Name="CatalogRecentFilter" Tag="3" Content="Recent" Padding="7,2" Click="CatalogFilterTab_Click" />
+                </StackPanel>
                 <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
                   <ToggleButton x:Name="CatalogGridToggle" Content="Grid" IsChecked="True" Click="CatalogViewChanged" />
                   <ToggleButton x:Name="CatalogListToggle" Content="List" Click="CatalogViewChanged" />
                   <TextBlock Text="Tile size" VerticalAlignment="Center" Margin="8,0,0,0" />
-                  <Slider x:Name="CatalogTileSizeSlider" Minimum="64" Maximum="128" Value="84" Width="95" />
+                  <Slider x:Name="CatalogTileSizeSlider" Minimum="52" Maximum="112" Value="72" Width="82" />
                 </StackPanel>
                 <TextBlock x:Name="CatalogPreviewStatus" Grid.Row="3" IsVisible="False" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="11" />
                 <ScrollViewer Grid.Row="4">
                   <Grid>
                     <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged">
                       <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                      <ListBox.Styles>
+                        <Style Selector="ListBoxItem"><Setter Property="Padding" Value="2" /><Setter Property="Margin" Value="0" /><Setter Property="MinWidth" Value="0" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Background" Value="Transparent" /></Style>
+                        <Style Selector="ListBoxItem:selected"><Setter Property="Background" Value="#3478A5" /></Style>
+                      </ListBox.Styles>
                       <ListBox.ItemTemplate><DataTemplate>
-                        <Border Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
+                        <Border Classes="catalog-tile" Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
                           <Grid>
                             <local:CatalogPreview Preview="{Binding Preview}" />
                             <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
@@ -152,29 +157,12 @@
               </Grid>
             </Border>
           </TabItem>
-          <TabItem Header="Recent">
-            <Border Background="#111923" Padding="2">
-              <ScrollViewer>
-                <ListBox x:Name="RecentGrid" SelectionChanged="CatalogSelectionChanged">
-                  <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
-                  <ListBox.ItemTemplate><DataTemplate>
-                    <Border Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
-                      <Grid>
-                        <local:CatalogPreview Preview="{Binding Preview}" />
-                        <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
-                      </Grid>
-                    </Border>
-                  </DataTemplate></ListBox.ItemTemplate>
-                </ListBox>
-              </ScrollViewer>
-            </Border>
-          </TabItem>
         </TabControl>
       </SplitView.Pane>
 
       <Border Background="#0D141D">
         <Grid>
-          <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Auto">
             <local:LevelCanvas x:Name="EditorCanvas" />
           </ScrollViewer>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Spacing="6">

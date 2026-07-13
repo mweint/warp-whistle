@@ -10,8 +10,10 @@ public sealed record LevelHeader(
     byte MusicAndTime)
 {
     public int ScreenCount => (SizeAndStartY & 0x0F) + 1;
+    public int PlayerStartY => (SizeAndStartY >> 5) & 0x07;
     public int BackgroundPalette => PalettesAndStartX & 0x07;
     public int ObjectPalette => (PalettesAndStartX >> 3) & 0x03;
+    public int PlayerStartX => (PalettesAndStartX >> 5) & 0x03;
     public bool IsVertical => (TilesetAndScroll & 0x10) != 0;
     public int Music => MusicAndTime & 0x0F;
     public int TimeSetting => (MusicAndTime >> 6) & 0x03;
@@ -23,6 +25,12 @@ public sealed record LevelHeader(
             PalettesAndStartX = (byte)((PalettesAndStartX & 0xE0) | (backgroundPalette & 0x07) | ((objectPalette & 0x03) << 3)),
             MusicAndTime = (byte)((MusicAndTime & 0x30) | ((time & 0x03) << 6) | (music & 0x0F))
         };
+
+    public LevelHeader WithPlayerStart(int x, int y) => this with
+    {
+        SizeAndStartY = (byte)((SizeAndStartY & 0x1F) | ((Math.Clamp(y, 0, 7) & 0x07) << 5)),
+        PalettesAndStartX = (byte)((PalettesAndStartX & 0x9F) | ((Math.Clamp(x, 0, 3) & 0x03) << 5))
+    };
 }
 
 public enum LevelElementKind

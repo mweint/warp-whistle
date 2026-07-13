@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
@@ -19,6 +20,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _autosaveTimer;
     private readonly List<Diagnostic> _diagnostics = [];
     private IReadOnlyList<Diagnostic> _activeRenderDiagnostics = [];
+    private EditorActionFeedback? _activePersistentFeedback;
     private readonly List<CatalogEntry> _catalog = [];
     private readonly ObservableCollection<CatalogEntry> _recentCatalog = [];
     private readonly Dictionary<string, CatalogPreviewData?> _catalogPreviewCache = [];
@@ -33,6 +35,7 @@ public sealed partial class MainWindow : Window
     private bool _refreshingInspector;
     private bool _refreshingCatalog;
     private bool _paletteObjectsEditing;
+    private int _catalogFilter;
     private byte[] _editingPaletteColors = new byte[16];
     private PaletteEditorWindow? _paletteEditor;
     private string _playMode = "rom";
@@ -54,13 +57,13 @@ public sealed partial class MainWindow : Window
         EditorCanvas.EditCommitted += EditorCanvas_EditCommitted;
         EditorCanvas.ActiveRenderDiagnosticsChanged += SetActiveRenderDiagnostics;
         EditorCanvas.ActionFeedbackAvailable += PresentEditorFeedback;
+        EditorCanvas.PersistentActionFeedbackCleared += ClearPersistentEditorFeedback;
         EditorCanvas.ZoomRequested += EditorCanvas_ZoomRequested;
         EditorCanvas.PanRequested += EditorCanvas_PanRequested;
         EditorCanvas.CatalogPlacementRequested += PlaceCatalogAt;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
         _catalog.AddRange(BuildCatalog(1));
         ApplyCatalogFilter();
-        RecentGrid.ItemsSource = _recentCatalog;
         _autosaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
         _autosaveTimer.Tick += AutosaveTimer_Tick;
         AddDiagnostics([Diagnostics.Info("READY", "Open a verified US PRG0 or PRG1 ROM to begin.")]);
@@ -708,7 +711,17 @@ public sealed partial class MainWindow : Window
     }
 
     private void CatalogFilterChanged(object? sender, TextChangedEventArgs e) => ApplyCatalogFilter();
-    private void CatalogFilterChanged(object? sender, SelectionChangedEventArgs e) => ApplyCatalogFilter();
+
+    private void CatalogFilterTab_Click(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not ToggleButton { Tag: string tag } || !int.TryParse(tag, out var selected)) return;
+        _catalogFilter = selected;
+        CatalogAllFilter.IsChecked = selected == 0;
+        CatalogObjectsFilter.IsChecked = selected == 1;
+        CatalogEnemiesFilter.IsChecked = selected == 2;
+        CatalogRecentFilter.IsChecked = selected == 3;
+        ApplyCatalogFilter();
+    }
 
     private void CatalogSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
@@ -717,7 +730,6 @@ public sealed partial class MainWindow : Window
         _refreshingCatalog = true;
         CatalogGrid.SelectedItem = entry;
         CatalogListView.SelectedItem = entry;
-        RecentGrid.SelectedItem = entry;
         _refreshingCatalog = false;
     }
 
@@ -727,7 +739,6 @@ public sealed partial class MainWindow : Window
             _recentCatalog.Remove(existing);
         _recentCatalog.Insert(0, entry);
         while (_recentCatalog.Count > 24) _recentCatalog.RemoveAt(_recentCatalog.Count - 1);
-        RecentGrid.SelectedItem = null;
     }
 
     private void CatalogViewChanged(object? sender, RoutedEventArgs e)
@@ -772,6 +783,7 @@ public sealed partial class MainWindow : Window
         _document = e.Current;
         MarkProjectChanged();
         RefreshInspector();
+        EditorCanvas.RefreshEnemyValidation();
     }
 
     private void PresentEditorFeedback(EditorActionFeedback feedback)
@@ -782,13 +794,28 @@ public sealed partial class MainWindow : Window
             DiagnosticSeverity.Warning => Diagnostics.Warning("EDITOR_ACTION", feedback.Details),
             _ => Diagnostics.Info("EDITOR_ACTION", feedback.Details)
         };
-        AddDiagnostics([diagnostic]);
+        if (feedback.Persistent)
+        {
+            _activePersistentFeedback = feedback;
+            RefreshDiagnosticsList();
+        }
+        else
+        {
+            AddDiagnostics([diagnostic]);
+        }
         RomStatusText.Text = feedback.Summary;
         if (feedback.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
         {
             DesignerNoticeText.Text = $"{feedback.Summary}: {feedback.Details}";
             DesignerNotice.IsVisible = true;
         }
+    }
+
+    private void ClearPersistentEditorFeedback()
+    {
+        _activePersistentFeedback = null;
+        DesignerNotice.IsVisible = false;
+        RefreshDiagnosticsList();
     }
 
     private void DesignerNotice_Click(object? sender, RoutedEventArgs e) => DiagnosticsPanel.IsExpanded = true;
@@ -1012,6 +1039,7 @@ public sealed partial class MainWindow : Window
         }
 
         RefreshInspector();
+        EditorCanvas.RefreshEnemyValidation();
     }
 
     private void MarkProjectChanged()
@@ -1122,6 +1150,12 @@ public sealed partial class MainWindow : Window
     {
         var all = _diagnostics
             .Concat(_activeRenderDiagnostics)
+            .Concat(_activePersistentFeedback is null
+                ? []
+                : [new Diagnostic(
+                    _activePersistentFeedback.Severity,
+                    "EDITOR_ACTION",
+                    _activePersistentFeedback.Details)])
             .AsEnumerable()
             .Reverse()
             .ToArray();
@@ -1153,9 +1187,10 @@ public sealed partial class MainWindow : Window
     {
         if (CatalogGrid is null || CatalogListView is null) return;
         var query = CatalogSearchBox?.Text?.Trim() ?? string.Empty;
-        var type = CatalogTypeBox?.SelectedIndex ?? 0;
-        var filtered = _catalog
-            .Where(item => (type == 0 || (type == 1 && !item.IsEnemy) || (type == 2 && item.IsEnemy)) &&
+        var type = _catalogFilter;
+        var source = type == 3 ? _recentCatalog.AsEnumerable() : _catalog;
+        var filtered = source
+            .Where(item => (type is 0 or 3 || (type == 1 && !item.IsEnemy) || (type == 2 && item.IsEnemy)) &&
                            (string.IsNullOrWhiteSpace(query) || item.Display.Contains(query, StringComparison.OrdinalIgnoreCase) ||
                             item.Id.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ||
                             $"${item.Id:X2}".Contains(query, StringComparison.OrdinalIgnoreCase)))
@@ -1262,7 +1297,7 @@ public sealed partial class MainWindow : Window
             var sample = document with
             {
                 Tileset = tileset,
-                Elements = entry.IsEnemy ? [] : [CreatePreviewElement(entry, document)],
+                Elements = entry.IsEnemy ? [] : CreatePreviewElements(entry, document, rom),
                 Enemies = entry.IsEnemy ? [new EnemyElement(0, (byte)entry.Id, 1, 1)] : []
             };
             var rendered = new Smb3LevelRenderer().Render(rom, sample);
@@ -1287,7 +1322,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private static LevelElement CreatePreviewElement(CatalogEntry entry, LevelDocument document)
+    private static LevelElement CreatePreviewElement(CatalogEntry entry, LevelDocument document, RomImage rom)
     {
         if (!entry.IsVariable)
             return new LevelElement(0, LevelElementKind.FixedGenerator, entry.Id, 1, 1,
@@ -1295,8 +1330,32 @@ public sealed partial class MainWindow : Window
         var encoded = entry.Id + 1;
         var firstHigh = (encoded / 15) << 5;
         var first = document.Header.IsVertical ? (byte)((firstHigh & 0xF0) | 1) : (byte)((firstHigh & 0xE0) | 1);
-        var shape = (byte)(((encoded % 15) << 4) | 1);
-        return new LevelElement(0, LevelElementKind.VariableGenerator, entry.Id, 1, 1, shape, null, first, 1, 1, 1);
+        var shape = (byte)(((encoded % 15) << 4) | GeneratorDefaults.Parameter(document.Tileset, entry.Id));
+        var fourByte = rom.Profile.Levels.TryGetValue(document.AreaId, out var location)
+            ? location.FourByteGeneratorIds
+            : new HashSet<int>();
+        return new LevelElement(0, LevelElementKind.VariableGenerator, entry.Id, 1, 1, shape,
+            GeneratorDefaults.ExtraParameter(document.Tileset, fourByte, entry.Id), first, 1, 1, 1);
+    }
+
+    private static IReadOnlyList<LevelElement> CreatePreviewElements(CatalogEntry entry, LevelDocument document, RomImage rom)
+    {
+        var target = CreatePreviewElement(entry, document, rom);
+        if (document.Tileset != 1 ||
+            !(entry.IsVariable && entry.Id is >= 0 and <= 3 || !entry.IsVariable && entry.Id == 0x06))
+        {
+            return [target];
+        }
+
+        // Big blocks and vines seek an already-generated ground tile. This is
+        // preview-only support, matching the stock generator's dependency;
+        // it is never added to the user's level.
+        const int groundY = 4;
+        var groundFirst = document.Header.IsVertical ? (byte)(groundY % 15) : (byte)groundY;
+        var groundSecond = document.Header.IsVertical ? (byte)((groundY / 15 << 4) | 1) : (byte)1;
+        var ground = new LevelElement(1, LevelElementKind.VariableGenerator, 11, 1, groundY,
+            0xC0, 3, groundFirst, groundSecond, 1, groundY);
+        return [ground, target];
     }
 
     private static CatalogPreviewData ToThumbnail(int width, int height, IReadOnlyList<uint> pixels)

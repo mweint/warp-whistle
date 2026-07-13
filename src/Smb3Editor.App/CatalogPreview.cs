@@ -4,6 +4,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 namespace Smb3Editor.App;
 
@@ -20,12 +21,10 @@ public sealed class CatalogPreview : Control
         set => SetValue(PreviewProperty, value);
     }
 
-    private WriteableBitmap? _bitmap;
+    private static readonly ConditionalWeakTable<CatalogPreviewData, WriteableBitmap> SharedBitmaps = [];
 
     static CatalogPreview() => PreviewProperty.Changed.AddClassHandler<CatalogPreview>((control, _) =>
     {
-        control._bitmap?.Dispose();
-        control._bitmap = null;
         control.InvalidateVisual();
     });
 
@@ -39,11 +38,11 @@ public sealed class CatalogPreview : Control
         base.Render(context);
         var preview = Preview;
         if (preview is null || preview.Width <= 0 || preview.Height <= 0) return;
-        _bitmap ??= CreateBitmap(preview);
+        var bitmap = SharedBitmaps.GetValue(preview, CreateBitmap);
         var scale = Math.Min(Bounds.Width / preview.Width, Bounds.Height / preview.Height);
         var left = (Bounds.Width - preview.Width * scale) / 2;
         var top = (Bounds.Height - preview.Height * scale) / 2;
-        context.DrawImage(_bitmap, new Rect(0, 0, preview.Width, preview.Height),
+        context.DrawImage(bitmap, new Rect(0, 0, preview.Width, preview.Height),
             new Rect(left, top, preview.Width * scale, preview.Height * scale));
     }
 

@@ -6,7 +6,7 @@ namespace Smb3Editor.App;
 /// <summary>Local ROM-derived thumbnail cache; never project or repository data.</summary>
 public static class CatalogPreviewCacheStore
 {
-    private const int Version = 3;
+    private const int Version = 5;
 
     public static IReadOnlyDictionary<(bool Enemy, int Id), CatalogPreviewData?> Load(string sha1, int tileset, int objectPalette)
     {

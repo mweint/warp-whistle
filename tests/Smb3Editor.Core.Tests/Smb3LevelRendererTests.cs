@@ -138,6 +138,36 @@ public sealed class Smb3LevelRendererTests
     }
 
     [Fact]
+    public void OptionalTopDecoRectangleCanGrowUpwardFromTheBottomRow()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess);
+        var rom = loaded.Value!;
+        var decoded = Smb3LevelCodec.Decode(rom, rom.Profile.Levels["W1-1"]);
+        Assert.True(decoded.IsSuccess);
+        var document = decoded.Value!;
+        var index = document.Elements.Max(static element => element.Index) + 1;
+        // Generator $28: first-byte high bits and shape high nibble identify it;
+        // low shape bits are its height and the fourth byte is its width.
+        var bottomRow = new LevelElement(index, LevelElementKind.VariableGenerator, 40, 4, 26, 0xB0, 3, 0x5A, 4, 4, 26);
+        var placed = document with { Elements = document.Elements.Append(bottomRow).ToArray() };
+        var renderer = new Smb3LevelRenderer();
+        var initial = renderer.Render(rom, placed);
+        Assert.True(initial.IsSuccess, string.Join(Environment.NewLine, initial.Diagnostics));
+
+        // A top resize grows upward, retaining the original lower edge.
+        var grownUpward = placed.ResizeElement(index, top: 25, parameter: 1);
+        var rendered = renderer.Render(rom, grownUpward);
+
+        Assert.True(rendered.IsSuccess, string.Join(Environment.NewLine, rendered.Diagnostics));
+        var bounds = rendered.Value!.ElementBounds[index];
+        Assert.Equal(25, bounds.Top);
+        Assert.Equal(27, bounds.Bottom);
+    }
+
+    [Fact]
     public void OptionalUnsafePlatformCanBeExcludedForRenderingWithoutChangingDocument()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");

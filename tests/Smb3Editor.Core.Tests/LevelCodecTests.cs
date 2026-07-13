@@ -3,6 +3,43 @@ namespace Smb3Editor.Core.Tests;
 public sealed class LevelCodecTests
 {
     [Fact]
+    public void NewVariableGeneratorDefaultsUseTheSmallestNonWrappingForm()
+    {
+        var fourByteIds = new HashSet<int> { 11, 35 };
+
+        Assert.Equal((byte)3, GeneratorDefaults.Parameter(1, 4)); // Floating block
+        Assert.Equal((byte)1, GeneratorDefaults.Parameter(1, 13)); // Cloud run
+        Assert.Equal((byte)1, GeneratorDefaults.Parameter(2, 26)); // Ceiling pipe
+        Assert.Equal((byte)0, GeneratorDefaults.Parameter(1, 15)); // Brick run
+        Assert.Equal((byte)1, GeneratorDefaults.ExtraParameter(1, fourByteIds, 11)); // Ground
+        Assert.Equal((byte)0, GeneratorDefaults.ExtraParameter(1, fourByteIds, 35)); // Waterfall rectangle
+        Assert.Null(GeneratorDefaults.ExtraParameter(1, fourByteIds, 10));
+        Assert.Equal(3, GeneratorDefaults.ClampParameter(1, 4, 0)); // Floating block cannot wrap
+        Assert.Equal(1, GeneratorDefaults.ClampExtraParameter(1, 11, 0)); // Ground cannot wrap
+        Assert.Equal(0, GeneratorDefaults.ClampParameter(1, 15, 0)); // Valid one-tile form remains valid
+        Assert.Equal(1, GeneratorDefaults.ClampParameter(1, 42, 0)); // Orange block run cannot wrap
+    }
+
+    [Fact]
+    public void PlainsTopDecoRectanglesRemainResizableAtTheLevelBoundary()
+    {
+        var document = CreateDocument() with
+        {
+            Elements = [new LevelElement(0, LevelElementKind.VariableGenerator, 40, 4, 26, 0, 3, 0, 4, 4, 26)]
+        };
+
+        var definition = GeneratorDefinition.For(document, document.Elements[0]);
+
+        Assert.Equal("Diamond Block Run", definition.Name);
+        Assert.True(definition.CanResizeTop);
+        Assert.True(definition.CanResizeBottom);
+        Assert.True(definition.CanResizeLeft);
+        Assert.True(definition.CanResizeRight);
+        Assert.True(definition.TopResizePreservesBottom);
+        Assert.True(definition.HorizontalSizeUsesExtraParameter);
+    }
+
+    [Fact]
     public void LayoutEncodingPreservesHeaderCommandsAndTerminator()
     {
         var document = CreateDocument();
@@ -97,6 +134,21 @@ public sealed class LevelCodecTests
         Assert.Equal(original.AlternateEnemyAddress, edited.AlternateEnemyAddress);
         Assert.Equal(original.TilesetAndScroll, edited.TilesetAndScroll);
         Assert.Equal(original.BackgroundAndAction, edited.BackgroundAndAction);
+    }
+
+    [Fact]
+    public void PlayerStartEditsPreserveEveryOtherHeaderSetting()
+    {
+        var original = new LevelHeader(0x1234, 0x5678, 0xB2, 0xE5, 0xD1, 0xA7, 0x35);
+
+        var edited = original.WithPlayerStart(1, 4);
+
+        Assert.Equal(1, edited.PlayerStartX);
+        Assert.Equal(4, edited.PlayerStartY);
+        Assert.Equal((byte)0x92, edited.SizeAndStartY);
+        Assert.Equal((byte)0xA5, edited.PalettesAndStartX);
+        Assert.Equal(original.TilesetAndScroll, edited.TilesetAndScroll);
+        Assert.Equal(original.MusicAndTime, edited.MusicAndTime);
     }
 
     [Fact]
