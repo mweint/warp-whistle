@@ -6,12 +6,24 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Text;
 using Smb3Editor.Core;
 
 namespace Smb3Editor.App;
 
+internal sealed record PatchOverrideOption(string Name, bool? Value)
+{
+    public override string ToString() => Name;
+}
+
 public sealed partial class MainWindow : Window
 {
+#if WARPWHISTLE_TRACE
+    private static readonly bool TraceToolsEnabled = true;
+#else
+    private static readonly bool TraceToolsEnabled = false;
+#endif
+
     private readonly IRomCompiler _compiler = new RomCompiler();
     private readonly IDirectLevelTestBuilder _directLevelTestBuilder = new DirectLevelTestBuilder();
     private readonly IBpsCodec _bpsCodec = new BpsCodec();
@@ -44,6 +56,7 @@ public sealed partial class MainWindow : Window
     private bool _isProjectDirty;
     private bool _suppressLevelSelection;
     private bool _closingApproved;
+    private bool _refreshingPatches;
 
     private static string LegacyPreviewCacheDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "preview-cache");
@@ -55,12 +68,15 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
+        TracePlayRomButton.IsVisible = TraceToolsEnabled;
+        TracePlayRomMenuItem.IsVisible = TraceToolsEnabled;
+        OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
         if (SidebarTabs.Items.Count >= 2)
         {
             var properties = SidebarTabs.Items[0];
             SidebarTabs.Items.RemoveAt(0);
-            SidebarTabs.Items.Add(properties);
+            SidebarTabs.Items.Insert(1, properties);
         }
         EditorCanvas.EditCommitted += EditorCanvas_EditCommitted;
         EditorCanvas.ActiveRenderDiagnosticsChanged += SetActiveRenderDiagnostics;
@@ -73,6 +89,7 @@ public sealed partial class MainWindow : Window
         EditorCanvas.CanvasItemSelected += ClearCatalogPasteSource;
         _catalog.AddRange(BuildCatalog(1));
         ApplyCatalogFilter();
+        RefreshPatches();
         AddDiagnostics([Diagnostics.Info("READY", "Open a verified US PRG0 or PRG1 ROM to begin.")]);
         if (Directory.Exists(LegacyPreviewCacheDirectory))
             AddDiagnostics([Diagnostics.Info("LEGACY_PREVIEW_CACHE", "A legacy item-preview cache remains in LocalAppData. Warp Whistle no longer writes preview images there.")]);
@@ -300,6 +317,20 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void OpenTraceLogs_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!TraceToolsEnabled) return;
+        try
+        {
+            Directory.CreateDirectory(WorkspacePaths.PlaytestDirectory);
+            Process.Start(new ProcessStartInfo { FileName = WorkspacePaths.PlaytestDirectory, UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            AddDiagnostics([Diagnostics.Warning("TRACE_LOG_OPEN", "Could not open the trace-log folder.")]);
+        }
+    }
+
     private void OpenLegacyPreviewCache_Click(object? sender, RoutedEventArgs e)
     {
         if (!Directory.Exists(LegacyPreviewCacheDirectory))
@@ -440,6 +471,84 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
         else RomStatusText.Text = "Launching Play ROM...";
+    }
+
+    private async void TracePlayRom_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!TraceToolsEnabled) return;
+        RomStatusText.Text = "Preparing Play ROM trace...";
+        if (!await EnsureProjectSavedForPlayAsync()) return;
+        SaveGlobalEmulatorSettings();
+        if (!await EnsureEmulatorConfiguredAsync())
+        {
+            ShowPlayFailure("Trace Play ROM needs a configured emulator.");
+            return;
+        }
+
+        var emulatorPath = EmulatorPathBox.Text!.Trim();
+        if (!Path.GetFileNameWithoutExtension(emulatorPath).Contains("mesen", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDiagnostics([Diagnostics.Error("TRACE_EMULATOR", "Trace Play ROM requires Mesen or Mesen 2 because it loads the bundled Lua trace.")]);
+            ShowPlayFailure("Trace Play ROM requires Mesen.");
+            return;
+        }
+
+        var artifact = CompileCurrentProject();
+        if (!artifact.IsSuccess)
+        {
+            ShowPlayFailure("Trace Play ROM is blocked — open Diagnostics for the exact reason.");
+            return;
+        }
+
+        try
+        {
+            var directory = WorkspacePaths.PlaytestDirectory;
+            Directory.CreateDirectory(directory);
+            var romPath = Path.Combine(directory, "trace-playtest.nes");
+            var logPath = Path.Combine(directory, "retry-trace.log");
+            var scriptPath = Path.Combine(directory, "trace-retry.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom?.Profile.Id ?? "unknown"} SHA1={_rom?.Sha1 ?? "unknown"}\n";
+            AddDiagnostics(AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false).Diagnostics);
+
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-retry.lua");
+            if (!File.Exists(bundledScript))
+                bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "retry-trace.lua");
+            if (!File.Exists(bundledScript))
+            {
+                AddDiagnostics([Diagnostics.Error("TRACE_SCRIPT", "The bundled Mesen trace script is missing from this build.")]);
+                ShowPlayFailure("The bundled trace script is missing.");
+                return;
+            }
+
+            var script = File.ReadAllText(bundledScript).Replace(
+                "@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal);
+            var scriptWrite = AtomicFile.Write(scriptPath, Encoding.UTF8.GetBytes(script), maintainBackup: false);
+            AddDiagnostics(scriptWrite.Diagnostics);
+            if (!scriptWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not prepare the trace script.");
+                return;
+            }
+
+            var romWrite = AtomicFile.Write(romPath, artifact.Value!.RomBytes, maintainBackup: false);
+            AddDiagnostics(romWrite.Diagnostics);
+            if (!romWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not write the trace Play ROM.");
+                return;
+            }
+
+            var launched = _emulatorLauncher.Launch(
+                new EmulatorConfiguration(emulatorPath, ["{rom}", scriptPath]), romPath);
+            AddDiagnostics(launched.Diagnostics);
+            if (!launched.IsSuccess) ShowPlayFailure("Could not start Mesen with the trace.");
+            else RomStatusText.Text = "Tracing Play ROM — navigate and test normally";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AddDiagnostics([Diagnostics.Error("TRACE_PREPARE", $"Could not prepare the trace files: {ex.Message}")]);
+            ShowPlayFailure("Could not prepare the Play ROM trace.");
+        }
     }
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
@@ -1149,7 +1258,94 @@ public sealed partial class MainWindow : Window
         }
 
         RefreshInspector();
+        RefreshPatches();
         EditorCanvas.RefreshEnemyValidation();
+    }
+
+    private void RefreshPatches()
+    {
+        _refreshingPatches = true;
+        try
+        {
+            var supported = _project is not null && string.Equals(_rom?.Profile.Id, "us-prg1", StringComparison.Ordinal);
+            PatchControls.IsEnabled = supported;
+
+            var settings = _project?.Patches ?? PatchSettings.None;
+            var retryIncluded = settings.QuickRetry is not null;
+            var quitIncluded = settings.StartSelectReturnToMap is not null;
+            QuickRetryCard.IsVisible = retryIncluded;
+            QuitToMapCard.IsVisible = quitIncluded;
+            NoPatchesText.IsVisible = !retryIncluded && !quitIncluded;
+
+            var choices = new[]
+            {
+                new PatchOverrideOption("Inherit", null),
+                new PatchOverrideOption("Enabled", true),
+                new PatchOverrideOption("Disabled", false)
+            };
+            QuickRetryOverride.ItemsSource = choices;
+            QuitToMapOverride.ItemsSource = choices;
+            var areaId = _document?.AreaId;
+            var retry = settings.QuickRetry ?? new();
+            var quit = settings.StartSelectReturnToMap ?? new();
+            PatchLevelText.Text = areaId is null ? "Select a level to set an override." : "Level override";
+            bool? retryOverride = areaId is not null && retry.LevelOverrides is not null && retry.LevelOverrides.TryGetValue(areaId, out var retryValue) ? retryValue : null;
+            bool? quitOverride = areaId is not null && quit.LevelOverrides is not null && quit.LevelOverrides.TryGetValue(areaId, out var quitValue) ? quitValue : null;
+            QuickRetryOverride.SelectedItem = choices.First(item => item.Value == retryOverride);
+            QuitToMapOverride.SelectedItem = choices.First(item => item.Value == quitOverride);
+            QuickRetryOverride.IsEnabled = supported && areaId is not null;
+            QuitToMapOverride.IsEnabled = supported && areaId is not null;
+        }
+        finally
+        {
+            _refreshingPatches = false;
+        }
+    }
+
+    private async void OpenPatchManager_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_project is null) return;
+        var supported = string.Equals(_rom?.Profile.Id, "us-prg1", StringComparison.Ordinal);
+        if (!supported)
+        {
+            AddDiagnostics([Diagnostics.Warning("PATCH_PROFILE", "Patches currently require Super Mario Bros. 3 (USA, PRG1 / Rev A).")]);
+            return;
+        }
+
+        var manager = new PatchManagerWindow(_project.Patches ?? PatchSettings.None, settings =>
+        {
+            _project = _project with { Patches = settings };
+            MarkPatchesChanged();
+        });
+        await manager.ShowDialog(this);
+    }
+
+    private void PatchOverrideChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_refreshingPatches || _project is null || _document is null || sender is not ComboBox box || box.SelectedItem is not PatchOverrideOption option) return;
+        var settings = _project.Patches ?? PatchSettings.None;
+        var retry = settings.QuickRetry ?? new();
+        var quit = settings.StartSelectReturnToMap ?? new();
+        if (ReferenceEquals(box, QuickRetryOverride)) retry = WithLevelOverride(retry, _document.AreaId, option.Value);
+        if (ReferenceEquals(box, QuitToMapOverride)) quit = WithLevelOverride(quit, _document.AreaId, option.Value);
+        _project = _project with { Patches = settings with { QuickRetry = retry, StartSelectReturnToMap = quit } };
+        MarkPatchesChanged();
+    }
+
+    private static PatchSetting WithLevelOverride(PatchSetting setting, string areaId, bool? value)
+    {
+        var overrides = new Dictionary<string, bool>(setting.LevelOverrides ?? new Dictionary<string, bool>(), StringComparer.Ordinal);
+        if (value is bool enabled) overrides[areaId] = enabled;
+        else overrides.Remove(areaId);
+        return setting with { LevelOverrides = overrides };
+    }
+
+    private void MarkPatchesChanged()
+    {
+        UpdateProjectEditorSettings();
+        _isProjectDirty = true;
+        UpdateSaveState();
+        RefreshPatches();
     }
 
     private void MarkProjectChanged()

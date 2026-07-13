@@ -23,16 +23,20 @@
   </Window.Styles>
   <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
     <Border Grid.Row="0" Background="#172231" Padding="6,2">
+      <StackPanel Orientation="Horizontal" Spacing="4">
       <Menu>
         <MenuItem Header="File">
           <MenuItem Header="Open ROM" Click="OpenRom_Click" />
           <MenuItem Header="Open Project" Click="OpenProject_Click" />
           <MenuItem Header="Save Project" Click="SaveProject_Click" />
           <MenuItem Header="Open Workspace Folder" Click="OpenWorkspace_Click" />
+          <MenuItem x:Name="OpenTraceLogsMenuItem" Header="Open Trace Logs" Click="OpenTraceLogs_Click" />
           <MenuItem Header="Open Legacy Preview Cache" Click="OpenLegacyPreviewCache_Click" />
           <Separator />
           <MenuItem Header="Export ROM" Click="ExportRom_Click" />
           <MenuItem Header="Export BPS" Click="ExportBps_Click" />
+          <Separator />
+          <MenuItem x:Name="TracePlayRomMenuItem" Header="Trace Play ROM" Click="TracePlayRom_Click" />
         </MenuItem>
         <MenuItem Header="Edit">
           <MenuItem Header="Undo" Click="Undo_Click" />
@@ -43,6 +47,8 @@
           <MenuItem Header="Delete" Click="Delete_Click" />
         </MenuItem>
       </Menu>
+      <Button Content="Patches" Click="OpenPatchManager_Click" Padding="10,3" VerticalAlignment="Center" />
+      </StackPanel>
     </Border>
 
     <Border Grid.Row="1" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,0,0,1" Padding="10,7">
@@ -56,6 +62,7 @@
             </MenuFlyout>
           </SplitButton.Flyout>
         </SplitButton>
+        <Button x:Name="TracePlayRomButton" Content="Trace Play ROM" Click="TracePlayRom_Click" ToolTip.Tip="Launch Play ROM with the bundled Mesen trace" />
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
         <Button Content="Clear level" Click="ClearLevel_Click" />
         <Button x:Name="SaveButton" Content="Save" Click="SaveProject_Click" />
@@ -178,6 +185,32 @@
                   </Grid>
                 </ScrollViewer>
               </Grid>
+            </Border>
+          </TabItem>
+          <TabItem Header="Patches">
+            <Border Background="#111923" Padding="16">
+              <ScrollViewer>
+                <StackPanel Spacing="10">
+                  <TextBlock Classes="section" Text="Enhanced patches" />
+                  <TextBlock Text="Optional PRG1 changes for compatible MMC3 flash carts and repro boards. Vanilla exports remain unchanged until enabled." TextWrapping="Wrap" />
+                  <StackPanel x:Name="PatchControls" Spacing="14">
+                    <TextBlock x:Name="NoPatchesText" Text="No patches are included. Use the top-bar Patches button to add one." TextWrapping="Wrap" Foreground="#9FB0C4" />
+                    <TextBlock x:Name="PatchLevelText" Text="Level overrides" Foreground="#9FB0C4" />
+                    <Border x:Name="QuickRetryCard" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" Padding="6" ToolTip.Tip="Normal death restarts the level without visiting the overworld.">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <TextBlock Text="Quick Retry" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <ComboBox x:Name="QuickRetryOverride" Grid.Column="1" Width="120" SelectionChanged="PatchOverrideChanged" />
+                      </Grid>
+                    </Border>
+                    <Border x:Name="QuitToMapCard" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" Padding="6" ToolTip.Tip="While paused, Select exits the level without completing it.">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                        <TextBlock Text="Start + Select: Return to Map" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <ComboBox x:Name="QuitToMapOverride" Grid.Column="1" Width="120" SelectionChanged="PatchOverrideChanged" />
+                      </Grid>
+                    </Border>
+                  </StackPanel>
+                </StackPanel>
+              </ScrollViewer>
             </Border>
           </TabItem>
         </TabControl>

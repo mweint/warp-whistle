@@ -6,8 +6,12 @@
     <ApplicationIcon>Assets\warp-whistle.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+    <!-- Local-only debugging. Normal and release builds do not ship trace tools. -->
+    <EnableTraceTools Condition="'$(EnableTraceTools)' == ''">false</EnableTraceTools>
+    <DefineConstants Condition="'$(EnableTraceTools)' == 'true'">$(DefineConstants);WARPWHISTLE_TRACE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="../../tools/retry-trace.lua" Link="trace-retry.lua" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" Condition="'$(EnableTraceTools)' == 'true'" />
     <ProjectReference Include="../Smb3Editor.Core/Smb3Editor.Core.csproj" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />

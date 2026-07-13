@@ -27,8 +27,8 @@ public sealed class DirectLevelTestBuilderTests
         Assert.Equal((byte)0x4C, direct.Value.RomBytes[0x3C4AD]);
         Assert.Equal((byte)0x20, direct.Value.RomBytes[0x3C937]);
         Assert.Equal((byte)0x4C, direct.Value.RomBytes[0x3CF9E]);
-        Assert.Equal((byte)0x40, direct.Value.RomBytes[0x3CF9F]);
-        Assert.Equal((byte)0xE2, direct.Value.RomBytes[0x3CFA0]);
+        Assert.Equal((byte)0x11, direct.Value.RomBytes[0x3CF9F]);
+        Assert.Equal((byte)0xE9, direct.Value.RomBytes[0x3CFA0]);
     }
 
     [Fact]

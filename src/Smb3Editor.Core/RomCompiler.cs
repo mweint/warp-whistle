@@ -9,6 +9,8 @@ public interface IRomCompiler
 
 public sealed class RomCompiler : IRomCompiler
 {
+    private readonly PatchCompiler _patchCompiler = new();
+
     public OperationResult<BuildArtifact> Compile(ProjectDocumentV2 project, RomImage source)
     {
         var diagnostics = new List<Diagnostic>();
@@ -89,6 +91,14 @@ public sealed class RomCompiler : IRomCompiler
             return OperationResult<BuildArtifact>.Failure(
                 Diagnostics.Error("BUILD_VERIFY", "The compiled image failed structural verification."));
         }
+
+        var patches = _patchCompiler.Apply(project, source, output);
+        diagnostics.AddRange(patches.Diagnostics);
+        if (!patches.IsSuccess)
+        {
+            return OperationResult<BuildArtifact>.Failure(diagnostics.ToArray());
+        }
+        output = patches.Value!;
 
         diagnostics.Add(Diagnostics.Info("BUILD_VERIFIED", "The compiled ROM preserves the source mapper and declared ROM size."));
         return OperationResult<BuildArtifact>.Success(new BuildArtifact(output, diagnostics), diagnostics);

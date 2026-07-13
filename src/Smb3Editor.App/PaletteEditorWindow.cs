@@ -38,6 +38,8 @@ public sealed class PaletteEditorWindow : Window
     private int _colorIndex;
     private bool _refreshing;
     private bool _saved;
+    private bool _dirty;
+    private bool _closeApproved;
     private readonly Dictionary<(bool Objects, int Slot), PaletteSlotInfo> _drafts = [];
     private readonly Stack<Dictionary<(bool Objects, int Slot), PaletteSlotInfo>> _undo = [];
     private readonly Stack<Dictionary<(bool Objects, int Slot), PaletteSlotInfo>> _redo = [];
@@ -99,10 +101,10 @@ public sealed class PaletteEditorWindow : Window
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Spacing = 5 };
         var cancelButton = new Button { Content = "Cancel", MinWidth = 90 };
-        cancelButton.Click += (_, _) => Close();
-        var saveButton = new Button { Content = "💾", Width = 34 };
+        cancelButton.Click += (_, _) => { _closeApproved = true; Close(); };
+        var saveButton = new Button { Content = "Save", MinWidth = 70 };
         ToolTip.SetTip(saveButton, "Save changes");
-        saveButton.Click += (_, _) => { _commit(_drafts.Values.ToArray()); _saved = true; Close(); };
+        saveButton.Click += (_, _) => { _commit(_drafts.Values.ToArray()); _saved = true; _closeApproved = true; Close(); };
         actions.Children.Add(cancelButton);
         actions.Children.Add(saveButton);
         Grid.SetRow(actions, 1);
@@ -113,7 +115,32 @@ public sealed class PaletteEditorWindow : Window
 
     protected override void OnClosing(WindowClosingEventArgs e)
     {
-        if (!_saved) _cancel();
+        if (_closeApproved || _saved || !_dirty)
+        {
+            if (!_saved && _closeApproved) _cancel();
+            base.OnClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        Avalonia.Threading.Dispatcher.UIThread.Post(async () =>
+        {
+            var choice = Owner is null
+                ? UnsavedChangesChoice.Cancel
+                : await new UnsavedChangesDialog("closing the palette editor").ShowDialog<UnsavedChangesChoice>((Window)Owner);
+            if (choice == UnsavedChangesChoice.Save)
+            {
+                _commit(_drafts.Values.ToArray());
+                _saved = true;
+                _closeApproved = true;
+                Close();
+            }
+            else if (choice == UnsavedChangesChoice.Discard)
+            {
+                _closeApproved = true;
+                Close();
+            }
+        });
         base.OnClosing(e);
     }
 
@@ -292,6 +319,7 @@ public sealed class PaletteEditorWindow : Window
         _undo.Push(CloneDrafts());
         _redo.Clear();
         _drafts[(slot.Objects, slot.Slot)] = slot;
+        _dirty = true;
         _preview(_drafts.Values.ToArray());
     }
 

@@ -15,6 +15,13 @@ Exports/
 WarpWhistle.exe
 WarpWhistle.pdb
 
+Directory.Build.user.props
+
+# Local-only Mesen trace/debug harnesses and logs.
+tools/*trace*.lua
+tools/retry-auto-test.lua
+tools/debug-addon.lua
+*.log
 *.user
 *.suo
 
