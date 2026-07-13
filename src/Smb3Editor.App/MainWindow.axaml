@@ -28,6 +28,8 @@
           <MenuItem Header="Open ROM" Click="OpenRom_Click" />
           <MenuItem Header="Open Project" Click="OpenProject_Click" />
           <MenuItem Header="Save Project" Click="SaveProject_Click" />
+          <MenuItem Header="Open Workspace Folder" Click="OpenWorkspace_Click" />
+          <MenuItem Header="Open Legacy Preview Cache" Click="OpenLegacyPreviewCache_Click" />
           <Separator />
           <MenuItem Header="Export ROM" Click="ExportRom_Click" />
           <MenuItem Header="Export BPS" Click="ExportBps_Click" />
@@ -56,7 +58,29 @@
         </SplitButton>
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
         <Button Content="Clear level" Click="ClearLevel_Click" />
+        <Button x:Name="SaveButton" Content="Save" Click="SaveProject_Click" />
+        <TextBlock x:Name="SaveStateText" Text="Saved" VerticalAlignment="Center" Foreground="#8FA0B5" FontSize="12" />
         <TextBlock Text="Ctrl + wheel: zoom" VerticalAlignment="Center" Foreground="#718399" Margin="8,0,0,0" />
+        <!-- This fixed slot keeps feedback in the app chrome without moving the canvas. -->
+        <Border Width="360" Height="30" VerticalAlignment="Center" Margin="8,0,0,0">
+          <StackPanel Orientation="Horizontal" Spacing="5">
+            <Button x:Name="DesignerNotice" IsVisible="False" Height="28" Padding="8,3"
+                    Background="#443814" BorderBrush="#A98732" BorderThickness="1"
+                    Click="DesignerNotice_Click" ToolTip.Tip="Open Diagnostics">
+              <TextBlock x:Name="DesignerNoticeText" Width="250" FontSize="12" FontWeight="SemiBold"
+                         Foreground="White" TextTrimming="CharacterEllipsis" />
+            </Button>
+            <Button x:Name="SafetyBanner" IsVisible="False" Height="28" Padding="8,3"
+                    Background="#7F261D" BorderBrush="#D98579" BorderThickness="1"
+                    Click="SafetyBanner_Click" ToolTip.Tip="Open Diagnostics">
+              <TextBlock x:Name="SafetyBannerText" Width="235" FontSize="12" FontWeight="SemiBold"
+                         Foreground="White" TextTrimming="CharacterEllipsis" />
+            </Button>
+            <Button x:Name="FixUnsafeButton" IsVisible="False" Content="Fix" Height="28"
+                    Padding="8,3" Background="#6C4A13" BorderBrush="#C9993E" BorderThickness="1"
+                    ToolTip.Tip="Fix ordering" Click="FixUnsafe_Click" />
+          </StackPanel>
+        </Border>
       </StackPanel>
     </Border>
 
@@ -115,7 +139,7 @@
           </TabItem>
           <TabItem Header="Items">
             <Border Background="#111923" Padding="2">
-              <Grid RowDefinitions="Auto,Auto,Auto,Auto,*" RowSpacing="6">
+              <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="6">
                 <TextBox x:Name="CatalogSearchBox" PlaceholderText="Search objects and enemies" TextChanged="CatalogFilterChanged" />
                 <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="3">
                   <ToggleButton x:Name="CatalogAllFilter" Tag="0" Content="All" IsChecked="True" Padding="7,2" Click="CatalogFilterTab_Click" />
@@ -129,8 +153,7 @@
                   <TextBlock Text="Tile size" VerticalAlignment="Center" Margin="8,0,0,0" />
                   <Slider x:Name="CatalogTileSizeSlider" Minimum="52" Maximum="112" Value="72" Width="82" />
                 </StackPanel>
-                <TextBlock x:Name="CatalogPreviewStatus" Grid.Row="3" IsVisible="False" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="11" />
-                <ScrollViewer Grid.Row="4">
+                <ScrollViewer Grid.Row="3">
                   <Grid>
                     <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged">
                       <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
@@ -161,27 +184,9 @@
       </SplitView.Pane>
 
       <Border Background="#0D141D">
-        <Grid>
-          <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Auto">
-            <local:LevelCanvas x:Name="EditorCanvas" />
-          </ScrollViewer>
-          <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14" Spacing="6">
-            <Button x:Name="DesignerNotice" IsVisible="False" Padding="13,7"
-                    Background="#6F5315" BorderBrush="#FFD36A" BorderThickness="1"
-                    Click="DesignerNotice_Click">
-              <TextBlock x:Name="DesignerNoticeText" FontWeight="SemiBold" Foreground="White" TextWrapping="Wrap" MaxWidth="520" />
-            </Button>
-            <Button x:Name="SafetyBanner" IsVisible="False" Padding="13,7"
-                    Background="#A92B1E" BorderBrush="#FFB4A8" BorderThickness="1"
-                    Click="SafetyBanner_Click">
-              <TextBlock x:Name="SafetyBannerText" FontWeight="SemiBold" Foreground="White" />
-            </Button>
-            <Button x:Name="FixUnsafeButton" IsVisible="False" Content="Fix ordering"
-                    Padding="10,7" Background="#8A5A12" BorderBrush="#FFD36A" BorderThickness="1"
-                    Click="FixUnsafe_Click">
-            </Button>
-          </StackPanel>
-        </Grid>
+        <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Auto">
+          <local:LevelCanvas x:Name="EditorCanvas" />
+        </ScrollViewer>
       </Border>
     </SplitView>
 

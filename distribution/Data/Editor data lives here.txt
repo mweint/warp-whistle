@@ -1,0 +1,1 @@
+Warp Whistle stores portable settings, palette-library entries, and temporary play-test ROMs here.

@@ -57,18 +57,24 @@ public sealed class LevelCanvas : Control
     private LevelDocument? _dragStartDocument;
     private int? _selectedElement;
     private int? _selectedEnemy;
+    private readonly HashSet<int> _selectedElements = [];
+    private readonly HashSet<int> _selectedEnemies = [];
     private bool _dragging;
     private bool _draggingPlayerStart;
     private bool _playerStartSelected;
     private bool _panning;
     private Point _panPointer;
     private Point _dragPointerStart;
+    private bool _marqueeSelecting;
+    private Point _marqueeStart;
+    private Point _marqueeCurrent;
+    private KeyModifiers _marqueeModifiers;
     private double _dragStartScaledTile;
     private int _dragItemStartX;
     private int _dragItemStartY;
     private double _zoom = 1;
-    private LevelElement? _copiedElement;
-    private EnemyElement? _copiedEnemy;
+    private IReadOnlyList<LevelElement> _copiedElements = [];
+    private IReadOnlyList<EnemyElement> _copiedEnemies = [];
     private string? _hoverTip;
     private readonly DispatcherTimer _hoverTimer;
     private readonly DispatcherTimer _wheelOrderTimer;
@@ -118,6 +124,7 @@ public sealed class LevelCanvas : Control
     public event EventHandler<CanvasZoomRequestedEventArgs>? ZoomRequested;
     public event EventHandler<CanvasPanRequestedEventArgs>? PanRequested;
     public event Action<string>? SelectionDescriptionChanged;
+    public event Action? CanvasItemSelected;
     public event Action<string>? LayerOrderFeedback;
     public event Action<EditorActionFeedback>? ActionFeedbackAvailable;
     public event Action? PersistentActionFeedbackCleared;
@@ -200,8 +207,7 @@ public sealed class LevelCanvas : Control
         {
             FlushWheelOrderBatch();
             _document = value;
-            _selectedElement = null;
-            _selectedEnemy = null;
+            ClearSelectionState();
             UpdateRenderedLevel();
             UpdateExtent();
             InvalidateVisual();
@@ -221,42 +227,92 @@ public sealed class LevelCanvas : Control
 
     public bool ShowGrid { get; set; } = true;
 
+    public void ClearSelection()
+    {
+        ClearSelectionState();
+        NotifySelectionChanged();
+        InvalidateVisual();
+    }
+
+    private bool IsElementSelected(int index) => _selectedElements.Contains(index);
+
+    private bool IsEnemySelected(int index) => _selectedEnemies.Contains(index);
+
+    private bool HasSelection => _selectedElements.Count > 0 || _selectedEnemies.Count > 0;
+
+    private bool HasMultipleSelection => _selectedElements.Count + _selectedEnemies.Count > 1;
+
+    private void ClearSelectionState()
+    {
+        _selectedElement = null;
+        _selectedEnemy = null;
+        _selectedElements.Clear();
+        _selectedEnemies.Clear();
+        _playerStartSelected = false;
+    }
+
+    private void SelectOnly(int? elementIndex, int? enemyIndex)
+    {
+        ClearSelectionState();
+        _selectedElement = elementIndex;
+        _selectedEnemy = enemyIndex;
+        if (elementIndex is int element) _selectedElements.Add(element);
+        if (enemyIndex is int enemy) _selectedEnemies.Add(enemy);
+    }
+
+    private void AddSelection(int? elementIndex, int? enemyIndex)
+    {
+        _playerStartSelected = false;
+        if (elementIndex is int element)
+        {
+            _selectedElements.Add(element);
+            _selectedElement = element;
+            _selectedEnemy = null;
+        }
+        else if (enemyIndex is int enemy)
+        {
+            _selectedEnemies.Add(enemy);
+            _selectedEnemy = enemy;
+            _selectedElement = null;
+        }
+    }
+
+    private void ToggleSelection(int? elementIndex, int? enemyIndex)
+    {
+        _playerStartSelected = false;
+        if (elementIndex is int element)
+        {
+            if (!_selectedElements.Remove(element))
+            {
+                _selectedElements.Add(element);
+                _selectedElement = element;
+                _selectedEnemy = null;
+            }
+        }
+        else if (enemyIndex is int enemy)
+        {
+            if (!_selectedEnemies.Remove(enemy))
+            {
+                _selectedEnemies.Add(enemy);
+                _selectedEnemy = enemy;
+                _selectedElement = null;
+            }
+        }
+
+        if ((_selectedElement is int selectedElement && !_selectedElements.Contains(selectedElement)) ||
+            (_selectedEnemy is int selectedEnemy && !_selectedEnemies.Contains(selectedEnemy)))
+        {
+            _selectedElement = _selectedElements.Count > 0 ? _selectedElements.First() : null;
+            _selectedEnemy = _selectedElements.Count > 0
+                ? null
+                : _selectedEnemies.Count > 0 ? _selectedEnemies.First() : null;
+        }
+    }
+
     public void CopySelectionTo(int x, int y)
     {
-        if (_document is null) return;
-        var previous = _document;
-        if (_selectedElement is int elementIndex && _document.Elements.FirstOrDefault(item => item.Index == elementIndex) is { Kind: not LevelElementKind.Junction } element)
-        {
-            var definition = GetEffectiveDefinition(element);
-            var maxX = _document.Header.IsVertical ? 15 : 255;
-            var maxY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 26;
-            var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(item => item.Index) + 1;
-            var copy = element with
-            {
-                Index = next,
-                X = definition.CanMoveX ? Math.Clamp(x, 0, maxX) : element.X,
-                Y = definition.CanMoveY ? Math.Clamp(y, 0, maxY) : element.Y
-            };
-            _document = _document with { Elements = _document.Elements.Append(copy).ToArray() };
-            _selectedElement = next;
-            Commit(previous);
-        }
-        else if (_selectedEnemy is int enemyIndex && _document.Enemies.FirstOrDefault(item => item.Index == enemyIndex) is { } enemy)
-        {
-            var next = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(item => item.Index) + 1;
-            var copy = enemy with
-            {
-                Index = next,
-                X = Math.Clamp(x, 0, _document.Header.IsVertical ? 15 : 255),
-                Y = Math.Clamp(y, 0, _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 31)
-            };
-            var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(copy));
-            var reordered = enemies[^1].Index != next;
-            _document = _document with { Enemies = enemies };
-            _selectedEnemy = next;
-            Commit(previous);
-            if (reordered) ReportEnemyStreamReordered();
-        }
+        CopySelection();
+        PasteCopiedSelectionAt(x, y);
     }
 
     public override void Render(DrawingContext context)
@@ -293,7 +349,7 @@ public sealed class LevelCanvas : Control
                 renderBounds.Top * ScaledTile,
                 Math.Max(1, renderBounds.Width) * ScaledTile,
                 Math.Max(1, renderBounds.Height) * ScaledTile);
-            var selected = _selectedElement == element.Index;
+            var selected = IsElementSelected(element.Index);
             var unsafeObject = _unsafeElementIndex == element.Index;
             var bouncingBlock = element.Kind == LevelElementKind.VariableGenerator && element.GeneratorId == 21;
             var marker = element.Kind == LevelElementKind.Junction
@@ -359,7 +415,7 @@ public sealed class LevelCanvas : Control
                     spriteBitmap,
                     new Rect(0, 0, preview.PixelWidth, preview.PixelHeight),
                     destination);
-                if (_selectedEnemy == enemy.Index)
+                if (IsEnemySelected(enemy.Index))
                 {
                     context.DrawRectangle(null, new Pen(Brushes.White, 2), destination.Inflate(2));
                 }
@@ -368,13 +424,20 @@ public sealed class LevelCanvas : Control
             }
 
             var center = new Point((enemy.X + 0.5) * ScaledTile, (enemy.Y + 0.5) * ScaledTile);
-            var selected = _selectedEnemy == enemy.Index;
+            var selected = IsEnemySelected(enemy.Index);
             var size = ScaledTile * 0.72;
             var marker = new Rect(center.X - size / 2, center.Y - size / 2, size, size);
             context.FillRectangle(new SolidColorBrush(Color.Parse("#7356D8"), selected ? 1 : 0.88), marker);
             context.DrawRectangle(null, new Pen(selected ? Brushes.White : Brushes.MediumPurple, selected ? 3 : 2), marker);
             context.DrawLine(new Pen(Brushes.White, 1), marker.TopLeft, marker.BottomRight);
             context.DrawLine(new Pen(Brushes.White, 1), marker.TopRight, marker.BottomLeft);
+        }
+
+        if (_marqueeSelecting)
+        {
+            var marquee = MarqueeRect();
+            context.FillRectangle(new SolidColorBrush(Color.Parse("#5EA9E8"), 0.14), marquee);
+            context.DrawRectangle(null, new Pen(new SolidColorBrush(Color.Parse("#8FCBFF")), 1), marquee);
         }
     }
 
@@ -401,8 +464,7 @@ public sealed class LevelCanvas : Control
             : (byte)x;
         var element = new LevelElement(next, LevelElementKind.FixedGenerator, generatorId, x, y, shape, null, first, second, x, y);
         _document = _document with { Elements = _document.Elements.Append(element).ToArray() };
-        _selectedElement = next;
-        _selectedEnemy = null;
+        SelectOnly(next, null);
         Commit(previous);
     }
 
@@ -427,8 +489,7 @@ public sealed class LevelCanvas : Control
         var extra = GeneratorDefaults.ExtraParameter(_document.Tileset, FourByteGeneratorIds, generatorId);
         var element = new LevelElement(next, LevelElementKind.VariableGenerator, generatorId, x, y, shape, extra, first, second, x, y);
         _document = _document with { Elements = _document.Elements.Append(element).ToArray() };
-        _selectedElement = next;
-        _selectedEnemy = null;
+        SelectOnly(next, null);
         Commit(previous);
     }
 
@@ -453,8 +514,7 @@ public sealed class LevelCanvas : Control
         var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(enemy));
         var reordered = enemies[^1].Index != next;
         _document = _document with { Enemies = enemies };
-        _selectedEnemy = next;
-        _selectedElement = null;
+        SelectOnly(null, next);
         Commit(previous);
         if (reordered) ReportEnemyStreamReordered();
         RefreshEnemyValidation();
@@ -465,8 +525,7 @@ public sealed class LevelCanvas : Control
         if (_document is null || (_document.Elements.Count == 0 && _document.Enemies.Count == 0)) return;
         var previous = _document;
         _document = _document with { Elements = [], Enemies = [] };
-        _selectedElement = null;
-        _selectedEnemy = null;
+        ClearSelectionState();
         Commit(previous);
         ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Information, "Level cleared", "All placed generators and enemies were removed. Use Undo to restore them.", null, false, false));
     }
@@ -509,78 +568,82 @@ public sealed class LevelCanvas : Control
             return;
         }
 
-        var previous = _document;
-        if (_selectedElement is int elementIndex)
-        {
-            var selected = _document.Elements.FirstOrDefault(item => item.Index == elementIndex);
-            if (selected?.Kind == LevelElementKind.Junction)
-            {
-                return;
-            }
+        var removableElements = _document.Elements
+            .Where(item => _selectedElements.Contains(item.Index) && item.Kind != LevelElementKind.Junction)
+            .Select(static item => item.Index)
+            .ToHashSet();
+        var removableEnemies = _document.Enemies
+            .Where(item => _selectedEnemies.Contains(item.Index))
+            .Select(static item => item.Index)
+            .ToHashSet();
+        if (removableElements.Count == 0 && removableEnemies.Count == 0) return;
 
-            _document = _document with { Elements = _document.Elements.Where(item => item.Index != elementIndex).ToArray() };
-            _selectedElement = null;
-        }
-        else if (_selectedEnemy is int enemyIndex)
+        var previous = _document;
+        _document = _document with
         {
-            _document = _document with { Enemies = _document.Enemies.Where(item => item.Index != enemyIndex).ToArray() };
-            _selectedEnemy = null;
-        }
-        else
-        {
-            return;
-        }
+            Elements = _document.Elements.Where(item => !removableElements.Contains(item.Index)).ToArray(),
+            Enemies = _document.Enemies.Where(item => !removableEnemies.Contains(item.Index)).ToArray()
+        };
+        ClearSelectionState();
 
         Commit(previous);
     }
 
     public void CopySelection()
     {
-        _copiedElement = _selectedElement is int elementIndex
-            ? _document?.Elements.FirstOrDefault(item => item.Index == elementIndex) is { Kind: not LevelElementKind.Junction } element
-                ? element
-                : null
-            : null;
-        _copiedEnemy = _selectedEnemy is int enemyIndex
-            ? _document?.Enemies.FirstOrDefault(item => item.Index == enemyIndex)
-            : null;
+        _copiedElements = _document?.Elements
+            .Where(item => _selectedElements.Contains(item.Index) && item.Kind != LevelElementKind.Junction)
+            .ToArray() ?? [];
+        _copiedEnemies = _document?.Enemies
+            .Where(item => _selectedEnemies.Contains(item.Index))
+            .ToArray() ?? [];
     }
 
     public void PasteSelection()
     {
-        if (_document is null)
-        {
-            return;
-        }
+        if (_copiedElements.Count == 0 && _copiedEnemies.Count == 0) return;
+        var anchorX = _copiedElements.Select(static item => item.X).Concat(_copiedEnemies.Select(static item => item.X)).Min() + 1;
+        var anchorY = _copiedElements.Select(static item => item.Y).Concat(_copiedEnemies.Select(static item => item.Y)).Min();
+        PasteCopiedSelectionAt(anchorX, anchorY);
+    }
 
+    private void PasteCopiedSelectionAt(int x, int y)
+    {
+        if (_document is null || (_copiedElements.Count == 0 && _copiedEnemies.Count == 0)) return;
+
+        var originX = _copiedElements.Select(static item => item.X).Concat(_copiedEnemies.Select(static item => item.X)).Min();
+        var originY = _copiedElements.Select(static item => item.Y).Concat(_copiedEnemies.Select(static item => item.Y)).Min();
+        var deltaX = x - originX;
+        var deltaY = y - originY;
+        var maxX = _document.Header.IsVertical ? 15 : 255;
+        var maxElementY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 26;
+        var maxEnemyY = _document.Header.IsVertical ? (_document.Header.ScreenCount * 15) - 1 : 31;
         var previous = _document;
-        var enemyReordered = false;
-        if (_copiedElement is not null)
+        var nextElement = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(static item => item.Index) + 1;
+        var nextEnemy = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(static item => item.Index) + 1;
+        var elementCopies = _copiedElements.Select(item =>
         {
-            var next = _document.Elements.Count == 0 ? 0 : _document.Elements.Max(static item => item.Index) + 1;
-            var copy = _copiedElement with { Index = next, X = Math.Min(255, _copiedElement.X + 1) };
-            _document = _document with { Elements = _document.Elements.Append(copy).ToArray() };
-            _selectedElement = next;
-            _selectedEnemy = null;
-        }
-        else if (_copiedEnemy is not null)
+            var definition = GetEffectiveDefinition(item);
+            return item with
+            {
+                Index = nextElement++,
+                X = definition.CanMoveX ? Math.Clamp(item.X + deltaX, 0, maxX) : item.X,
+                Y = definition.CanMoveY ? Math.Clamp(item.Y + deltaY, 0, maxElementY) : item.Y
+            };
+        }).ToArray();
+        var enemyCopies = _copiedEnemies.Select(item => item with
         {
-            var next = _document.Enemies.Count == 0 ? 0 : _document.Enemies.Max(static item => item.Index) + 1;
-            var maximumX = _document.Header.IsVertical ? 15 : 255;
-            var copy = _copiedEnemy with { Index = next, X = Math.Min(maximumX, _copiedEnemy.X + 1) };
-            var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Append(copy));
-            enemyReordered = enemies[^1].Index != next;
-            _document = _document with { Enemies = enemies };
-            _selectedEnemy = next;
-            _selectedElement = null;
-        }
-        else
-        {
-            return;
-        }
-
+            Index = nextEnemy++,
+            X = Math.Clamp(item.X + deltaX, 0, maxX),
+            Y = Math.Clamp(item.Y + deltaY, 0, maxEnemyY)
+        }).ToArray();
+        var enemies = _document.OrderEnemiesForSpawn(_document.Enemies.Concat(enemyCopies));
+        _document = _document with { Elements = _document.Elements.Concat(elementCopies).ToArray(), Enemies = enemies };
+        SelectOnly(null, null);
+        foreach (var element in elementCopies) AddSelection(element.Index, null);
+        foreach (var enemy in enemyCopies) AddSelection(null, enemy.Index);
         Commit(previous);
-        if (enemyReordered) ReportEnemyStreamReordered();
+        if (!previous.Enemies.Select(static item => item.Index).SequenceEqual(enemies.Select(static item => item.Index))) ReportEnemyStreamReordered();
     }
 
     public void MoveSelectionInOrder(int delta, bool coalesce = false)
@@ -628,6 +691,7 @@ public sealed class LevelCanvas : Control
         var point = e.GetPosition(this);
         var tileX = (int)(point.X / ScaledTile);
         var tileY = (int)(point.Y / ScaledTile);
+        var modifiers = e.KeyModifiers;
         if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed)
         {
             if (CatalogPlacementRequested is not null) CatalogPlacementRequested(tileX, tileY);
@@ -643,13 +707,16 @@ public sealed class LevelCanvas : Control
             e.Handled = true;
             return;
         }
-        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed && PlayerStartContains(point))
+        if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed &&
+            !modifiers.HasFlag(KeyModifiers.Shift) && !modifiers.HasFlag(KeyModifiers.Control) &&
+            PlayerStartContains(point))
         {
             BeginPlayerStartDrag(e, point);
             return;
         }
 
-        if (_document is not null && _selectedElement is int currentIndex &&
+        if (!modifiers.HasFlag(KeyModifiers.Shift) && !modifiers.HasFlag(KeyModifiers.Control) &&
+            _document is not null && _selectedElement is int currentIndex &&
             _document.Elements.FirstOrDefault(item => item.Index == currentIndex) is { } current)
         {
             var currentBounds = GetElementRect(current);
@@ -690,14 +757,13 @@ public sealed class LevelCanvas : Control
             }
         }
 
-        _playerStartSelected = false;
-        _selectedEnemy = _document?.Enemies
+        var hitEnemy = _document?.Enemies
             .Where(item => EnemyContainsPoint(item, point) ||
                            (Math.Abs(item.X - tileX) <= 1 && Math.Abs(item.Y - tileY) <= 1))
             .Select(static item => (int?)item.Index)
             .LastOrDefault();
 
-        _selectedElement = _selectedEnemy is null
+        var hitElement = hitEnemy is null
             ? _document?.Elements
                 .Select(item => (Item: item, Distance: Math.Min(
                     ElementAnchorDistanceSquared(item, point),
@@ -712,12 +778,33 @@ public sealed class LevelCanvas : Control
                   .LastOrDefault()
             : null;
 
-        if ((_selectedElement is not null || _selectedEnemy is not null) && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        if (hitElement is not null || hitEnemy is not null)
         {
+            if (modifiers.HasFlag(KeyModifiers.Control))
+            {
+                ToggleSelection(hitElement, hitEnemy);
+            }
+            else if (modifiers.HasFlag(KeyModifiers.Shift))
+            {
+                AddSelection(hitElement, hitEnemy);
+            }
+            else if (!(HasMultipleSelection &&
+                       ((hitElement is int element && IsElementSelected(element)) ||
+                        (hitEnemy is int enemy && IsEnemySelected(enemy)))))
+            {
+                SelectOnly(hitElement, hitEnemy);
+            }
+            else
+            {
+                _selectedElement = hitElement;
+                _selectedEnemy = hitEnemy;
+            }
+
             var selectedElement = _selectedElement is int elementIndex
                 ? _document?.Elements.FirstOrDefault(item => item.Index == elementIndex)
                 : null;
-            if (selectedElement?.Kind != LevelElementKind.Junction)
+            if (!modifiers.HasFlag(KeyModifiers.Shift) && !modifiers.HasFlag(KeyModifiers.Control) &&
+                selectedElement?.Kind != LevelElementKind.Junction)
             {
                 if (selectedElement is not null)
                 {
@@ -736,6 +823,22 @@ public sealed class LevelCanvas : Control
                     e.Pointer.Capture(this);
                 }
             }
+        }
+        else if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            _marqueeSelecting = true;
+            _marqueeStart = point;
+            _marqueeCurrent = point;
+            _marqueeModifiers = modifiers;
+            e.Pointer.Capture(this);
+        }
+
+        if (hitElement is not null || hitEnemy is not null)
+        {
+            // A canvas selection becomes the current paste source, replacing a
+            // previously selected catalog item.
+            CopySelection();
+            CanvasItemSelected?.Invoke();
         }
 
         InvalidateVisual();
@@ -760,6 +863,13 @@ public sealed class LevelCanvas : Control
             return;
         }
         var point = e.GetPosition(this);
+        if (_marqueeSelecting)
+        {
+            _marqueeCurrent = point;
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
         if (!_dragging)
         {
             UpdateCursor(point);
@@ -784,7 +894,11 @@ public sealed class LevelCanvas : Control
             (point.Y - _dragPointerStart.Y) / _dragStartScaledTile,
             MidpointRounding.AwayFromZero);
         var dragSource = _dragStartDocument ?? _document;
-        if (_selectedElement is int elementIndex)
+        if (_dragOperation == DragOperation.Move && HasMultipleSelection)
+        {
+            _document = MoveSelectedItems(dragSource, deltaX, deltaY);
+        }
+        else if (_selectedElement is int elementIndex)
         {
             var element = dragSource.Elements.First(item => item.Index == elementIndex);
             var definition = GetEffectiveDefinition(element);
@@ -862,6 +976,17 @@ public sealed class LevelCanvas : Control
             e.Handled = true;
             return;
         }
+        if (_marqueeSelecting)
+        {
+            _marqueeCurrent = e.GetPosition(this);
+            _marqueeSelecting = false;
+            ApplyMarqueeSelection();
+            e.Pointer.Capture(null);
+            InvalidateVisual();
+            NotifySelectionChanged();
+            e.Handled = true;
+            return;
+        }
         if (_dragging && _dragStartDocument is not null && _document is not null && _dragStartDocument != _document)
         {
             EditCommitted?.Invoke(this, new LevelEditCommittedEventArgs(_dragStartDocument, _document));
@@ -904,6 +1029,69 @@ public sealed class LevelCanvas : Control
             _layerHintPoint = e.GetPosition(this);
             MoveSelectionInOrder(e.Delta.Y > 0 ? 1 : -1, coalesce: true);
             e.Handled = true;
+        }
+    }
+
+    private Rect MarqueeRect()
+    {
+        var left = Math.Min(_marqueeStart.X, _marqueeCurrent.X);
+        var top = Math.Min(_marqueeStart.Y, _marqueeCurrent.Y);
+        return new Rect(left, top, Math.Abs(_marqueeCurrent.X - _marqueeStart.X), Math.Abs(_marqueeCurrent.Y - _marqueeStart.Y));
+    }
+
+    private LevelDocument MoveSelectedItems(LevelDocument source, int deltaX, int deltaY)
+    {
+        var maxX = source.Header.IsVertical ? 15 : 255;
+        var maxElementY = source.Header.IsVertical ? (source.Header.ScreenCount * 15) - 1 : 26;
+        var maxEnemyY = source.Header.IsVertical ? (source.Header.ScreenCount * 15) - 1 : 31;
+        var moved = source;
+        foreach (var element in source.Elements.Where(item => _selectedElements.Contains(item.Index) && item.Kind != LevelElementKind.Junction))
+        {
+            var definition = GetEffectiveDefinition(element);
+            moved = moved.MoveElement(element.Index,
+                definition.CanMoveX ? Math.Clamp(element.X + deltaX, 0, maxX) : element.X,
+                definition.CanMoveY ? Math.Clamp(element.Y + deltaY, 0, maxElementY) : element.Y);
+        }
+        foreach (var enemy in source.Enemies.Where(item => _selectedEnemies.Contains(item.Index)))
+        {
+            moved = moved.MoveEnemy(enemy.Index,
+                Math.Clamp(enemy.X + deltaX, 0, maxX),
+                Math.Clamp(enemy.Y + deltaY, 0, maxEnemyY));
+        }
+        return moved with { Enemies = moved.OrderEnemiesForSpawn(moved.Enemies) };
+    }
+
+    private void ApplyMarqueeSelection()
+    {
+        if (_document is null) return;
+        var marquee = MarqueeRect();
+        if (!_marqueeModifiers.HasFlag(KeyModifiers.Shift) && !_marqueeModifiers.HasFlag(KeyModifiers.Control))
+        {
+            ClearSelectionState();
+        }
+
+        foreach (var element in _document.Elements)
+        {
+            var bounds = GetElementBounds(element);
+            var rect = new Rect(bounds.Left * ScaledTile, bounds.Top * ScaledTile,
+                Math.Max(1, bounds.Width) * ScaledTile, Math.Max(1, bounds.Height) * ScaledTile);
+            if (!marquee.Intersects(rect)) continue;
+            if (_marqueeModifiers.HasFlag(KeyModifiers.Control)) ToggleSelection(element.Index, null);
+            else AddSelection(element.Index, null);
+        }
+
+        foreach (var enemy in _document.Enemies)
+        {
+            var rect = new Rect(enemy.X * ScaledTile, enemy.Y * ScaledTile, ScaledTile, ScaledTile);
+            if (!marquee.Intersects(rect)) continue;
+            if (_marqueeModifiers.HasFlag(KeyModifiers.Control)) ToggleSelection(null, enemy.Index);
+            else AddSelection(null, enemy.Index);
+        }
+
+        if (HasSelection)
+        {
+            CopySelection();
+            CanvasItemSelected?.Invoke();
         }
     }
 
@@ -1241,9 +1429,8 @@ public sealed class LevelCanvas : Control
     private void BeginPlayerStartDrag(PointerPressedEventArgs e, Point point)
     {
         if (_document is null) return;
+        ClearSelectionState();
         _playerStartSelected = true;
-        _selectedElement = null;
-        _selectedEnemy = null;
         _dragging = true;
         _draggingPlayerStart = true;
         _dragStartDocument = _document;
@@ -1425,6 +1612,11 @@ public sealed class LevelCanvas : Control
         if (_playerStartSelected)
         {
             SelectionDescriptionChanged?.Invoke($"Mario start\nX: {PlayerStartXCoordinates[_document.Header.PlayerStartX]:0.##} tiles\nY: {PlayerStartYCoordinates[_document.Header.PlayerStartY]:0} tiles");
+        }
+        else if (HasMultipleSelection)
+        {
+            var count = _selectedElements.Count + _selectedEnemies.Count;
+            SelectionDescriptionChanged?.Invoke($"{count} items selected\nDrag to move the group. Ctrl+C, Ctrl+V, Delete, and Backspace apply to the group.");
         }
         else if (_selectedElement is int elementIndex && _document.Elements.FirstOrDefault(item => item.Index == elementIndex) is { } element)
         {

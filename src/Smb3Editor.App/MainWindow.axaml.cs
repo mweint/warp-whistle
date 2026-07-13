@@ -5,6 +5,7 @@ using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using Smb3Editor.Core;
 
 namespace Smb3Editor.App;
@@ -17,18 +18,17 @@ public sealed partial class MainWindow : Window
     private readonly IEmulatorLauncher _emulatorLauncher = new EmulatorLauncher();
     private readonly ISmb3LevelRenderer _safetyRenderer = new Smb3LevelRenderer();
     private readonly UndoRedoHistory<LevelDocument> _history = new();
-    private readonly DispatcherTimer _autosaveTimer;
     private readonly List<Diagnostic> _diagnostics = [];
     private IReadOnlyList<Diagnostic> _activeRenderDiagnostics = [];
     private EditorActionFeedback? _activePersistentFeedback;
     private readonly List<CatalogEntry> _catalog = [];
     private readonly ObservableCollection<CatalogEntry> _recentCatalog = [];
-    private readonly Dictionary<string, CatalogPreviewData?> _catalogPreviewCache = [];
-    private readonly object _catalogPreviewCacheLock = new();
+    private readonly CatalogPreviewMemoryCache _catalogPreviewCache = new();
     private CancellationTokenSource? _catalogPreviewCancellation;
     private CatalogEntry? _activeCatalogEntry;
     private RomImage? _rom;
     private ProjectDocumentV2? _project;
+    private ProjectDocumentV2? _savedProject;
     private LevelDocument? _document;
     private string? _projectPath;
     private AppSettingsV1 _appSettings = new();
@@ -40,6 +40,13 @@ public sealed partial class MainWindow : Window
     private PaletteEditorWindow? _paletteEditor;
     private string _playMode = "rom";
     private int _zoomSequence;
+    private string? _activeAreaId;
+    private bool _isProjectDirty;
+    private bool _suppressLevelSelection;
+    private bool _closingApproved;
+
+    private static string LegacyPreviewCacheDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "preview-cache");
 
     public MainWindow() : this(null)
     {
@@ -48,6 +55,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
+        WorkspacePaths.Configure(AppContext.BaseDirectory);
         if (SidebarTabs.Items.Count >= 2)
         {
             var properties = SidebarTabs.Items[0];
@@ -62,11 +70,12 @@ public sealed partial class MainWindow : Window
         EditorCanvas.PanRequested += EditorCanvas_PanRequested;
         EditorCanvas.CatalogPlacementRequested += PlaceCatalogAt;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
+        EditorCanvas.CanvasItemSelected += ClearCatalogPasteSource;
         _catalog.AddRange(BuildCatalog(1));
         ApplyCatalogFilter();
-        _autosaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
-        _autosaveTimer.Tick += AutosaveTimer_Tick;
         AddDiagnostics([Diagnostics.Info("READY", "Open a verified US PRG0 or PRG1 ROM to begin.")]);
+        if (Directory.Exists(LegacyPreviewCacheDirectory))
+            AddDiagnostics([Diagnostics.Info("LEGACY_PREVIEW_CACHE", "A legacy item-preview cache remains in LocalAppData. Warp Whistle no longer writes preview images there.")]);
         var settings = AppSettingsStore.Load();
         AddDiagnostics(settings.Diagnostics);
         if (settings.IsSuccess)
@@ -121,49 +130,50 @@ public sealed partial class MainWindow : Window
 
     private string? FindExternalRom()
     {
-        var directory = Path.Combine(AppContext.BaseDirectory, "externals", "roms");
-        if (!Directory.Exists(directory)) return null;
-
-        IEnumerable<string> candidates;
-        try
+        var directories = new[]
         {
-            candidates = Directory.EnumerateFiles(directory, "*.nes", SearchOption.TopDirectoryOnly)
-                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            WorkspacePaths.RomsDirectory,
+            Path.Combine(AppContext.BaseDirectory, "externals", "roms")
+        };
+        foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            AddDiagnostics([Diagnostics.Warning("ROM_EXTERNAL_READ", "Could not read externals/roms.")]);
-            return null;
-        }
-
-        foreach (var candidate in candidates)
-        {
-            var loaded = RomImage.Load(candidate);
-            if (loaded.IsSuccess)
+            if (!Directory.Exists(directory)) continue;
+            try
             {
-                AddDiagnostics([Diagnostics.Info("ROM_EXTERNAL_FOUND", $"Using verified ROM from externals/roms: {Path.GetFileName(candidate)}")]);
-                return candidate;
+                foreach (var candidate in Directory.EnumerateFiles(directory, "*.nes", SearchOption.TopDirectoryOnly).OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!RomImage.Load(candidate).IsSuccess) continue;
+                    AddDiagnostics([Diagnostics.Info("ROM_WORKSPACE_FOUND", $"Using verified ROM from {Path.GetFileName(directory)}: {Path.GetFileName(candidate)}")]);
+                    return candidate;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AddDiagnostics([Diagnostics.Warning("ROM_WORKSPACE_READ", $"Could not read {Path.GetFileName(directory)}.")]);
             }
         }
-
         return null;
     }
 
     private static string? FindExternalMesen()
     {
-        var directory = Path.Combine(AppContext.BaseDirectory, "externals", "emulators");
-        if (!Directory.Exists(directory)) return null;
-        try
+        var directories = new[]
         {
-            return Directory.EnumerateFiles(directory, "Mesen.exe", SearchOption.AllDirectories)
-                .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            WorkspacePaths.EmulatorsDirectory,
+            Path.Combine(AppContext.BaseDirectory, "externals", "emulators")
+        };
+        foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            return null;
+            if (!Directory.Exists(directory)) continue;
+            try
+            {
+                var mesen = Directory.EnumerateFiles(directory, "Mesen.exe", SearchOption.AllDirectories)
+                    .OrderBy(static path => path, StringComparer.OrdinalIgnoreCase).FirstOrDefault();
+                if (mesen is not null) return mesen;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+        return null;
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -177,6 +187,11 @@ public sealed partial class MainWindow : Window
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.Y)
         {
             Redo();
+            e.Handled = true;
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.S)
+        {
+            _ = SaveProjectAsync(forcePicker: _projectPath is null);
             e.Handled = true;
         }
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.C)
@@ -214,6 +229,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        if (!await ResolveUnsavedChangesAsync("opening another ROM")) return;
         OpenRom(files[0].Path.LocalPath, createProject: true);
     }
 
@@ -221,14 +237,16 @@ public sealed partial class MainWindow : Window
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Open SMB3 project",
+            Title = "Open Warp Whistle project",
             AllowMultiple = false,
-            FileTypeFilter = [new FilePickerFileType("SMB3 project") { Patterns = ["*.smb3proj"] }]
+            FileTypeFilter = [new FilePickerFileType("Warp Whistle project") { Patterns = ["*.wwproj"] }]
         });
         if (files.Count == 0)
         {
             return;
         }
+
+        if (!await ResolveUnsavedChangesAsync("opening another project")) return;
 
         var path = files[0].Path.LocalPath;
         var loaded = ProjectStore.Load(path);
@@ -254,9 +272,50 @@ public sealed partial class MainWindow : Window
         {
             SetDocument(modified, clearHistory: true);
         }
+        _savedProject = _project;
+        _isProjectDirty = false;
+        UpdateSaveState();
     }
 
-    private async void SaveProject_Click(object? sender, RoutedEventArgs e) => await SaveProjectAsync(forcePicker: _projectPath is null);
+    private async void SaveProject_Click(object? sender, RoutedEventArgs e)
+    {
+        await SaveProjectAsync(forcePicker: _projectPath is null);
+    }
+
+    private void OpenWorkspace_Click(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            foreach (var directory in new[]
+                     {
+                         WorkspacePaths.RomsDirectory, WorkspacePaths.EmulatorsDirectory,
+                         WorkspacePaths.ProjectsDirectory, WorkspacePaths.ExportsDirectory, WorkspacePaths.DataDirectory
+                     })
+                Directory.CreateDirectory(directory);
+            Process.Start(new ProcessStartInfo { FileName = WorkspacePaths.RootDirectory, UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            AddDiagnostics([Diagnostics.Warning("WORKSPACE_OPEN", "Could not open the workspace folder.")]);
+        }
+    }
+
+    private void OpenLegacyPreviewCache_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!Directory.Exists(LegacyPreviewCacheDirectory))
+        {
+            AddDiagnostics([Diagnostics.Info("LEGACY_PREVIEW_CACHE", "No legacy preview cache was found.")]);
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo { FileName = LegacyPreviewCacheDirectory, UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            AddDiagnostics([Diagnostics.Warning("LEGACY_PREVIEW_CACHE", "Could not open the legacy preview cache.")]);
+        }
+    }
 
     private async void ExportRom_Click(object? sender, RoutedEventArgs e)
     {
@@ -341,9 +400,15 @@ public sealed partial class MainWindow : Window
         PlayModeMenuItem.Header = _playMode == "level" ? "Play ROM" : "Play Level";
     }
 
+    private Task<bool> EnsureProjectSavedForPlayAsync() =>
+        _projectPath is null || _isProjectDirty
+            ? SaveProjectAsync(forcePicker: _projectPath is null)
+            : Task.FromResult(true);
+
     private async void PlayTest_Click(object? sender, RoutedEventArgs e)
     {
         RomStatusText.Text = "Preparing Play ROM...";
+        if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
@@ -359,7 +424,7 @@ public sealed partial class MainWindow : Window
 
         var emulatorPath = EmulatorPathBox.Text!.Trim();
 
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "Playtest");
+        var directory = WorkspacePaths.PlaytestDirectory;
         var romPath = Path.Combine(directory, "playtest.nes");
         var written = AtomicFile.Write(romPath, artifact.Value!.RomBytes, maintainBackup: false);
         AddDiagnostics(written.Diagnostics);
@@ -380,6 +445,7 @@ public sealed partial class MainWindow : Window
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
     {
         RomStatusText.Text = "Preparing Play Level...";
+        if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
@@ -409,7 +475,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "Playtest");
+        var directory = WorkspacePaths.PlaytestDirectory;
         TryCleanDirectPlaytests(directory);
         var romPath = Path.Combine(directory, $"play-level-{selectedLevel.AreaId}-{Guid.NewGuid():N}.nes");
         var written = AtomicFile.Write(romPath, directTest.Value!.RomBytes, maintainBackup: false);
@@ -547,6 +613,7 @@ public sealed partial class MainWindow : Window
         _project = _project with { PaletteOverrides = overrides, PaletteSlotLabels = labels };
         EditorCanvas.PaletteOverrides = overrides;
         MarkProjectChanged();
+        UpdateSaveState();
         RefreshInspector();
     }
 
@@ -703,11 +770,16 @@ public sealed partial class MainWindow : Window
 
     private void PlaceCatalogAt(int x, int y)
     {
-        if (_activeCatalogEntry is not { } entry) return;
-        if (entry.IsEnemy) EditorCanvas.AddEnemy((byte)entry.Id, x, y);
-        else if (entry.IsVariable) EditorCanvas.AddVariableGenerator(entry.Id, x, y);
-        else EditorCanvas.AddFixedGenerator(entry.Id, x, y);
-        RememberRecent(entry);
+        if (_activeCatalogEntry is { } entry)
+        {
+            if (entry.IsEnemy) EditorCanvas.AddEnemy((byte)entry.Id, x, y);
+            else if (entry.IsVariable) EditorCanvas.AddVariableGenerator(entry.Id, x, y);
+            else EditorCanvas.AddFixedGenerator(entry.Id, x, y);
+            RememberRecent(entry);
+            return;
+        }
+
+        EditorCanvas.CopySelectionTo(x, y);
     }
 
     private void CatalogFilterChanged(object? sender, TextChangedEventArgs e) => ApplyCatalogFilter();
@@ -727,9 +799,20 @@ public sealed partial class MainWindow : Window
     {
         if (_refreshingCatalog || sender is not ListBox { SelectedItem: CatalogEntry entry }) return;
         _activeCatalogEntry = entry;
+        EditorCanvas.ClearSelection();
         _refreshingCatalog = true;
         CatalogGrid.SelectedItem = entry;
         CatalogListView.SelectedItem = entry;
+        _refreshingCatalog = false;
+    }
+
+    private void ClearCatalogPasteSource()
+    {
+        if (_activeCatalogEntry is null) return;
+        _activeCatalogEntry = null;
+        _refreshingCatalog = true;
+        CatalogGrid.SelectedItem = null;
+        CatalogListView.SelectedItem = null;
         _refreshingCatalog = false;
     }
 
@@ -756,13 +839,27 @@ public sealed partial class MainWindow : Window
     private void Paste_Click(object? sender, RoutedEventArgs e) => EditorCanvas.PasteSelection();
     private void Delete_Click(object? sender, RoutedEventArgs e) => EditorCanvas.DeleteSelection();
 
-    private void LevelList_SelectionChanged(object? sender, EventArgs e)
+    private async void LevelList_SelectionChanged(object? sender, EventArgs e)
     {
-        if (_rom is null || LevelList.SelectedItem is not LevelLocation location)
+        if (_suppressLevelSelection || _rom is null || LevelList.SelectedItem is not LevelLocation location || location.AreaId == _activeAreaId)
         {
             return;
         }
 
+        if (!await ResolveUnsavedChangesAsync("switching levels"))
+        {
+            _suppressLevelSelection = true;
+            LevelList.SelectedItem = _rom.Profile.Levels.Values.FirstOrDefault(item => item.AreaId == _activeAreaId);
+            _suppressLevelSelection = false;
+            return;
+        }
+
+        LoadLevel(location);
+    }
+
+    private void LoadLevel(LevelLocation location)
+    {
+        if (_rom is null) return;
         if (_project?.ModifiedAreas.TryGetValue(location.AreaId, out var modified) == true)
         {
             SetDocument(modified, clearHistory: true);
@@ -806,8 +903,10 @@ public sealed partial class MainWindow : Window
         RomStatusText.Text = feedback.Summary;
         if (feedback.Severity is DiagnosticSeverity.Error or DiagnosticSeverity.Warning)
         {
-            DesignerNoticeText.Text = $"{feedback.Summary}: {feedback.Details}";
-            DesignerNotice.IsVisible = true;
+            // Keep the chrome notification brief. The actionable detail belongs in
+            // Diagnostics and the affected object's tooltip.
+            DesignerNoticeText.Text = feedback.Summary;
+            DesignerNotice.IsVisible = !_activeRenderDiagnostics.Any(item => item.Severity == DiagnosticSeverity.Error);
         }
     }
 
@@ -831,6 +930,9 @@ public sealed partial class MainWindow : Window
         FixUnsafeButton.IsVisible = error is not null && EditorCanvas.CanFixActiveIssue;
         if (error is not null)
         {
+            // A safety state is the primary chrome message; do not show a second
+            // warning beside it for the same condition.
+            DesignerNotice.IsVisible = false;
             string name = "Level state";
             if (TryReadElementIndex(error.Code, out var index) && EditorCanvas.Document?.Elements.FirstOrDefault(item => item.Index == index) is { } element)
             {
@@ -895,15 +997,6 @@ public sealed partial class MainWindow : Window
             Math.Clamp(x, 0, Math.Max(0, LevelScrollViewer.Extent.Width - LevelScrollViewer.Viewport.Width)),
             Math.Clamp(y, 0, Math.Max(0, LevelScrollViewer.Extent.Height - LevelScrollViewer.Viewport.Height)));
 
-    private void AutosaveTimer_Tick(object? sender, EventArgs e)
-    {
-        _autosaveTimer.Stop();
-        if (_projectPath is not null && _project is not null)
-        {
-            AddDiagnostics(ProjectStore.Save(_project, _projectPath).Diagnostics);
-        }
-    }
-
     private bool OpenRom(string path, bool createProject)
     {
         var loaded = RomImage.Load(path);
@@ -915,6 +1008,8 @@ public sealed partial class MainWindow : Window
         }
 
         _rom = loaded.Value!;
+        _activeAreaId = null;
+        _catalogPreviewCache.Clear();
         EditorCanvas.SourceRom = _rom;
         _appSettings = _appSettings with { LastRomPath = _rom.SourcePath };
         AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
@@ -922,6 +1017,9 @@ public sealed partial class MainWindow : Window
         {
             _project = ProjectDocumentV2.Create(_rom);
             _projectPath = null;
+            _savedProject = _project;
+            _isProjectDirty = false;
+            UpdateSaveState();
         }
 
         RomStatusText.Text = $"{_rom.Profile.DisplayName}\nSHA-1 {_rom.Sha1[..12]}...\nSource remains read-only";
@@ -938,33 +1036,44 @@ public sealed partial class MainWindow : Window
         return true;
     }
 
-    private async Task SaveProjectAsync(bool forcePicker)
+    private async Task<bool> SaveProjectAsync(bool forcePicker)
     {
         if (_project is null)
         {
             AddDiagnostics([Diagnostics.Error("PROJECT_NONE", "Open a verified ROM before saving a project.")]);
-            return;
+            return false;
         }
 
         UpdateProjectEditorSettings();
         if (forcePicker || _projectPath is null)
         {
+            Directory.CreateDirectory(WorkspacePaths.ProjectsDirectory);
+            var projectsFolder = await StorageProvider.TryGetFolderFromPathAsync(WorkspacePaths.ProjectsDirectory);
             var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "Save SMB3 project",
-                SuggestedFileName = "My-SMB3-Hack.smb3proj",
-                DefaultExtension = "smb3proj",
-                FileTypeChoices = [new FilePickerFileType("SMB3 project") { Patterns = ["*.smb3proj"] }]
+                Title = "Save Warp Whistle project",
+                SuggestedFileName = "My-SMB3-Hack.wwproj",
+                DefaultExtension = "wwproj",
+                SuggestedStartLocation = projectsFolder,
+                FileTypeChoices = [new FilePickerFileType("Warp Whistle project") { Patterns = ["*.wwproj"] }]
             });
             if (file is null)
             {
-                return;
+                return false;
             }
 
             _projectPath = file.Path.LocalPath;
         }
 
-        AddDiagnostics(ProjectStore.Save(_project, _projectPath).Diagnostics);
+        var saved = ProjectStore.Save(_project, _projectPath);
+        AddDiagnostics(saved.Diagnostics);
+        if (saved.IsSuccess)
+        {
+            _savedProject = _project;
+            _isProjectDirty = false;
+            UpdateSaveState();
+        }
+        return saved.IsSuccess;
     }
 
     private OperationResult<BuildArtifact> CompileCurrentProject()
@@ -1027,6 +1136,7 @@ public sealed partial class MainWindow : Window
     private void SetDocument(LevelDocument document, bool clearHistory)
     {
         _document = document;
+        _activeAreaId = document.AreaId;
         EditorCanvas.FourByteGeneratorIds = _rom?.Profile.Levels.TryGetValue(document.AreaId, out var location) == true
             ? location.FourByteGeneratorIds
             : new HashSet<int>();
@@ -1051,11 +1161,8 @@ public sealed partial class MainWindow : Window
 
         _project = _project.WithArea(_document);
         UpdateProjectEditorSettings();
-        if (_projectPath is not null)
-        {
-            _autosaveTimer.Stop();
-            _autosaveTimer.Start();
-        }
+        _isProjectDirty = true;
+        UpdateSaveState();
     }
 
     private void UpdateProjectEditorSettings()
@@ -1077,6 +1184,53 @@ public sealed partial class MainWindow : Window
                 EmulatorArguments = arguments
             }
         };
+    }
+
+    private async Task<bool> ResolveUnsavedChangesAsync(string action)
+    {
+        if (!_isProjectDirty) return true;
+        var choice = await new UnsavedChangesDialog(action).ShowDialog<UnsavedChangesChoice>(this);
+        return choice switch
+        {
+            UnsavedChangesChoice.Save => await SaveProjectAsync(forcePicker: _projectPath is null),
+            UnsavedChangesChoice.Discard => DiscardUnsavedChanges(),
+            _ => false
+        };
+    }
+
+    private bool DiscardUnsavedChanges()
+    {
+        if (_savedProject is not null) _project = _savedProject;
+        _isProjectDirty = false;
+        UpdateSaveState();
+        return true;
+    }
+
+    private void UpdateSaveState()
+    {
+        if (SaveButton is null || SaveStateText is null) return;
+        SaveButton.IsEnabled = _project is not null;
+        SaveStateText.Text = _isProjectDirty ? "Unsaved changes" : "Saved";
+        SaveStateText.Foreground = _isProjectDirty ? Avalonia.Media.Brushes.Gold : Avalonia.Media.Brushes.MediumSeaGreen;
+        Title = _isProjectDirty ? "Warp Whistle *" : "Warp Whistle";
+    }
+
+    protected override void OnClosing(WindowClosingEventArgs e)
+    {
+        if (_closingApproved || !_isProjectDirty)
+        {
+            base.OnClosing(e);
+            return;
+        }
+
+        e.Cancel = true;
+        Dispatcher.UIThread.Post(async () =>
+        {
+            if (!await ResolveUnsavedChangesAsync("closing Warp Whistle")) return;
+            _closingApproved = true;
+            Close();
+        });
+        base.OnClosing(e);
     }
 
     private void RefreshLevelList()
@@ -1171,16 +1325,17 @@ public sealed partial class MainWindow : Window
         _catalogPreviewCancellation?.Cancel();
         _catalog.Clear();
         _catalog.AddRange(BuildCatalog(tileset));
-        var cached = _rom is null || _document is null
-            ? new Dictionary<(bool Enemy, int Id), CatalogPreviewData?>()
-            : new Dictionary<(bool Enemy, int Id), CatalogPreviewData?>(CatalogPreviewCacheStore.Load(_rom.Sha1, tileset, _document.Header.ObjectPalette));
+        var missing = new List<CatalogEntry>();
         for (var index = 0; index < _catalog.Count; index++)
         {
             var entry = _catalog[index];
-            if (cached.TryGetValue((entry.IsEnemy, CachePreviewId(entry)), out var preview)) _catalog[index] = entry with { Preview = preview };
+            if (_rom is not null && _document is not null && TryGetCatalogPreview(entry, tileset, _rom, _document, out var preview))
+                _catalog[index] = entry with { Preview = preview };
+            else
+                missing.Add(entry);
         }
         ApplyCatalogFilter();
-        QueueCatalogPreviews(_catalog.Where(entry => !cached.ContainsKey((entry.IsEnemy, CachePreviewId(entry)))).ToArray(), tileset, cached);
+        QueueCatalogPreviews(missing, tileset);
     }
 
     private void ApplyCatalogFilter()
@@ -1230,29 +1385,22 @@ public sealed partial class MainWindow : Window
         return items;
     }
 
-    private void QueueCatalogPreviews(IReadOnlyList<CatalogEntry> entries, int tileset, Dictionary<(bool Enemy, int Id), CatalogPreviewData?> cached)
+    private void QueueCatalogPreviews(IReadOnlyList<CatalogEntry> entries, int tileset)
     {
         if (_rom is null || _document is null) return;
         if (entries.Count == 0)
         {
-            CatalogPreviewStatus.IsVisible = false;
             return;
         }
         var cancellation = _catalogPreviewCancellation = new CancellationTokenSource();
         var rom = _rom;
         var document = _document;
-        CatalogPreviewStatus.Text = $"Preparing item previews from your ROM (0/{entries.Count})…";
-        CatalogPreviewStatus.IsVisible = true;
         _ = Task.Run(async () =>
         {
-            var completed = 0;
-            foreach (var batch in entries.Chunk(1))
+            foreach (var batch in entries.Chunk(12))
             {
                 if (cancellation.IsCancellationRequested) return;
                 var rendered = batch.Select(entry => (entry, Preview: GetCatalogPreview(entry, tileset, rom, document))).ToArray();
-                foreach (var (entry, preview) in rendered)
-                    cached[(entry.IsEnemy, CachePreviewId(entry))] = preview;
-                completed += rendered.Length;
                 Dispatcher.UIThread.Post(() =>
                 {
                     if (cancellation.IsCancellationRequested) return;
@@ -1262,35 +1410,35 @@ public sealed partial class MainWindow : Window
                         if (index >= 0) _catalog[index] = entry with { Preview = preview };
                     }
                     ApplyCatalogFilter();
-                    CatalogPreviewStatus.Text = $"Preparing item previews from your ROM ({completed}/{entries.Count})…";
                 });
-                await Task.Delay(150, cancellation.Token).ConfigureAwait(false);
+                await Task.Delay(25, cancellation.Token).ConfigureAwait(false);
             }
-            if (cancellation.IsCancellationRequested) return;
-            CatalogPreviewCacheStore.Save(rom.Sha1, tileset, document.Header.ObjectPalette, cached);
-            Dispatcher.UIThread.Post(() =>
-            {
-                if (cancellation.IsCancellationRequested) return;
-                CatalogPreviewStatus.Text = "Item previews are ready.";
-            });
         }, cancellation.Token);
     }
 
     private CatalogPreviewData? GetCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document)
     {
-        var key = $"{rom.Sha1}:{tileset}:{document.Header.ObjectPalette}:{entry.IsEnemy}:{entry.IsVariable}:{entry.Id}";
-        lock (_catalogPreviewCacheLock)
-        {
-            if (_catalogPreviewCache.TryGetValue(key, out var cached)) return cached;
-        }
-        var preview = BuildCatalogPreview(entry, tileset, rom, document);
-        lock (_catalogPreviewCacheLock) _catalogPreviewCache[key] = preview;
+        if (TryGetCatalogPreview(entry, tileset, rom, document, out var cached)) return cached;
+        var preview = BuildCatalogPreview(entry, tileset, rom, document, _project?.PaletteOverrides);
+        _catalogPreviewCache.Add(CatalogPreviewKey(entry, tileset, rom, document), preview);
         return preview;
+    }
+
+    private bool TryGetCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document, out CatalogPreviewData? preview) =>
+        _catalogPreviewCache.TryGet(CatalogPreviewKey(entry, tileset, rom, document), out preview);
+
+    private string CatalogPreviewKey(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document)
+    {
+        var overrides = string.Join(",", (_project?.PaletteOverrides ?? [])
+            .Where(item => item.Tileset == tileset)
+            .OrderBy(item => item.Objects).ThenBy(item => item.Slot)
+            .Select(item => $"{item.Objects}:{item.Slot}:{Convert.ToHexString(item.Colors.ToArray())}"));
+        return $"{rom.Sha1}:{tileset}:{document.Header.BackgroundPalette}:{document.Header.ObjectPalette}:{overrides}:{entry.IsEnemy}:{entry.IsVariable}:{entry.Id}";
     }
 
     private static int CachePreviewId(CatalogEntry entry) => entry.Id + (entry.IsVariable ? 0x1000 : 0);
 
-    private static CatalogPreviewData? BuildCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document)
+    private static CatalogPreviewData? BuildCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document, IReadOnlyList<PaletteOverride>? paletteOverrides)
     {
         try
         {
@@ -1300,7 +1448,7 @@ public sealed partial class MainWindow : Window
                 Elements = entry.IsEnemy ? [] : CreatePreviewElements(entry, document, rom),
                 Enemies = entry.IsEnemy ? [new EnemyElement(0, (byte)entry.Id, 1, 1)] : []
             };
-            var rendered = new Smb3LevelRenderer().Render(rom, sample);
+            var rendered = new Smb3LevelRenderer().Render(rom, sample, paletteOverrides: paletteOverrides);
             if (!rendered.IsSuccess) return null;
             var snapshot = rendered.Value!;
             if (entry.IsEnemy && snapshot.EnemySprites.TryGetValue((byte)entry.Id, out var sprite))

@@ -25,10 +25,19 @@ jobs:
           dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=None -p:DebugSymbols=false -o artifacts/release
+      - name: Build portable ZIP
+        shell: pwsh
+        run: >
+          New-Item -ItemType Directory -Force artifacts/portable/WarpWhistle |
+          Out-Null; Copy-Item distribution/* artifacts/portable/WarpWhistle -Recurse -Force;
+          Copy-Item artifacts/release/WarpWhistle.exe artifacts/portable/WarpWhistle/WarpWhistle.exe -Force;
+          Compress-Archive -Path artifacts/portable/WarpWhistle -DestinationPath
+          "artifacts/WarpWhistle-${{ github.ref_name }}-win-x64.zip" -Force
       - name: Create alpha release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: >
-          gh release create "${{ github.ref_name }}" artifacts/release/WarpWhistle.exe
+          gh release delete "${{ github.ref_name }}" --yes;
+          gh release create "${{ github.ref_name }}" "artifacts/WarpWhistle-${{ github.ref_name }}-win-x64.zip"
           --title "Warp Whistle ${{ github.ref_name }}" --generate-notes --prerelease

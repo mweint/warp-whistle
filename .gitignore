@@ -7,6 +7,11 @@ artifacts/
 Mesen_2.2.1_Windows/
 references/
 externals/
+Data/
+ROMs/
+Emulators/
+Projects/
+Exports/
 WarpWhistle.exe
 WarpWhistle.pdb
 
@@ -18,6 +23,6 @@ WarpWhistle.pdb
 *.rom
 *.bps
 *.ips
-*.smb3proj
-*.smb3proj.bak
+*.wwproj
+*.wwproj.bak
 *.recovery

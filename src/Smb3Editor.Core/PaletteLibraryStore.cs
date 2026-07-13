@@ -11,9 +11,7 @@ public static class PaletteLibraryStore
 {
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "WarpWhistle", "palettes.json");
+    public static string DefaultPath => WorkspacePaths.PaletteLibraryPath;
 
     public static OperationResult<IReadOnlyList<SavedPalette>> Load(string? path = null)
     {

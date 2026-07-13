@@ -20,10 +20,7 @@ public static class AppSettingsStore
         WriteIndented = true
     };
 
-    public static string DefaultPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "WarpWhistle",
-        "settings.json");
+    public static string DefaultPath => WorkspacePaths.SettingsPath;
 
     public static OperationResult<AppSettingsV1> Load(string? path = null)
     {

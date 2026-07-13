@@ -1,0 +1,1 @@
+Save Warp Whistle .wwproj files here if you want them alongside the editor.

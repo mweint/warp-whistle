@@ -1,0 +1,1 @@
+Put Mesen or another emulator folder here. Warp Whistle automatically finds Mesen.exe.

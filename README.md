@@ -6,18 +6,18 @@ The application never ships with a ROM. It accepts only verified US PRG0/PRG1 im
 
 ## Local workspace layout
 
-Keep the project root tidy. Launch `WarpWhistle.exe`, then place local files here:
+The portable release unzips into a `WarpWhistle` folder. Launch `WarpWhistle.exe`, then place local files here:
 
 ```text
-externals/
-  roms/                   Clean US PRG0 or PRG1 .nes files
-  emulators/
+ROMs/                      Clean US PRG0 or PRG1 .nes files
+Emulators/
     Mesen/                Mesen folder containing Mesen.exe
-references/
-  smb3-prg1-disassembly/ Local research reference
+Projects/                  Editor projects
+Exports/                   Exported ROMs and patches
+Data/                      Settings, palette library, temporary play tests
 ```
 
-When no previous choice is saved, Warp Whistle opens the first verified ROM in `externals/roms` and uses `Mesen.exe` found under `externals/emulators`. These folders, projects, ROMs, builds, and references are local-only and ignored by Git.
+When no previous choice is saved, Warp Whistle opens the first verified ROM in `ROMs/` and uses `Mesen.exe` found under `Emulators/`. The legacy `externals/` layout remains supported. Item art is kept in memory only; it is not written to a hidden preview cache.
 
 ## Current vertical slice
 
@@ -54,4 +54,4 @@ Create the self-contained Windows build with:
 dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o artifacts/win-x64-warp-whistle
 ```
 
-ROMs, patches, generated builds, and `.smb3proj` files are ignored by source control.
+ROMs, patches, generated builds, and Warp Whistle `.wwproj` files are ignored by source control.
