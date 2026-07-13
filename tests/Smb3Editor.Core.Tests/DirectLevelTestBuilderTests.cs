@@ -53,6 +53,27 @@ public sealed class DirectLevelTestBuilderTests
     }
 
     [Fact]
+    public void DirectLevelBuildAcceptsEnabledPatchRuntimeHooks()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var source = RomImage.Load(path);
+        Assert.True(source.IsSuccess, string.Join(Environment.NewLine, source.Diagnostics));
+        if (source.Value!.Profile.Id != "us-prg1") return;
+
+        var project = ProjectDocumentV2.Create(source.Value) with
+        {
+            Patches = new PatchSettings(new PatchSetting(true), new PatchSetting(true))
+        };
+        var compiled = new RomCompiler().Compile(project, source.Value);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+
+        var direct = new DirectLevelTestBuilder().Build(compiled.Value!, source.Value, source.Value.Profile.Levels["W1-1"]);
+        Assert.True(direct.IsSuccess, string.Join(Environment.NewLine, direct.Diagnostics));
+    }
+
+    [Fact]
     public void OptionalPrg1RomBuildsEveryCatalogedDirectTarget()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");

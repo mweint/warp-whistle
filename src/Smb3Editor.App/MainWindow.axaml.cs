@@ -553,6 +553,7 @@ public sealed partial class MainWindow : Window
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
     {
+        ClearPlayLevelFeedback();
         RomStatusText.Text = "Preparing Play Level...";
         if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
@@ -580,7 +581,10 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(directTest.Diagnostics);
         if (!directTest.IsSuccess)
         {
-            ShowPlayFailure("Play Level could not prepare its temporary test ROM.");
+            var reason = directTest.Diagnostics.FirstOrDefault(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)?.Message;
+            ShowPlayFailure(string.IsNullOrWhiteSpace(reason)
+                ? "Play Level could not prepare its temporary test ROM."
+                : $"Play Level: {reason}");
             return;
         }
 
@@ -618,6 +622,14 @@ public sealed partial class MainWindow : Window
         var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath);
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
+        else DesignerNotice.IsVisible = false;
+    }
+
+    private void ClearPlayLevelFeedback()
+    {
+        _diagnostics.RemoveAll(static diagnostic => diagnostic.Code.StartsWith("PLAY_LEVEL", StringComparison.Ordinal));
+        DesignerNotice.IsVisible = false;
+        RefreshDiagnosticsList();
     }
 
     private void ShowPlayFailure(string message)

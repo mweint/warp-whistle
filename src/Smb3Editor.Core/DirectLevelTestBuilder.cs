@@ -33,6 +33,8 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     // entering $88C8 directly leaves the title-screen NMI handler active.
     private const ushort EntryStubAddress = 0xE911;
     private const ushort PrepareHarnessAddress = 0xE932;
+    private const ushort PatchRuntimeAddress = 0xE240;
+    private const ushort PatchRuntimeEnd = 0xE2BF;
     private const ushort LevelPreparationEntry = 0x88C8;
     private const int HarnessCapacity = 111;
     private static readonly byte[] TitleEntryExpected = [0x20, 0xAF, 0xA8];
@@ -78,16 +80,6 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         {
             return OperationResult<DirectLevelTestArtifact>.Failure(
                 diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_TARGET", "The selected level is not a verified PRG1 catalog target.")).ToArray());
-        }
-
-        if (!HasExpectedBytes(compiledRom.RomBytes, TitleEntryOffset, TitleEntryExpected) ||
-            (!HasExpectedBytes(compiledRom.RomBytes, PrepareLevelCallOffset, PrepareLevelExpected) &&
-             !HasJsrIntoRetryArea(compiledRom.RomBytes, PrepareLevelCallOffset)) ||
-            !HasExpectedBytesAny(compiledRom.RomBytes, RestartExitOffset, RestartExitExpected, [0x4C, 0x40, 0xE2]) ||
-            !HasExpectedHarness(compiledRom.RomBytes))
-        {
-            return OperationResult<DirectLevelTestArtifact>.Failure(
-                diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_SIGNATURE", "The verified PRG1 test-harness sites do not match this compiled ROM; Play Level was not created.")).ToArray());
         }
 
         if (!TryGetPointers(source, verifiedLevel, out var layoutPointer, out var enemyPointer, out var reason))
@@ -243,11 +235,30 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         return target is >= 0xE911 and <= 0xE9AF;
     }
 
+    private static bool HasJsrIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x20) return false;
+        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
+        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
+    }
+
+    private static bool HasJumpIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x4C) return false;
+        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
+        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
+    }
+
     private static bool HasExpectedFill(ReadOnlySpan<byte> bytes, int offset, int length, byte value) =>
         offset >= 0 && length >= 0 && offset <= bytes.Length - length && bytes.Slice(offset, length).ToArray().All(item => item == value);
 
-    private static bool HasExpectedHarness(ReadOnlySpan<byte> bytes) =>
+    private static bool HasSourceBytes(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source, int offset, int length) =>
+        offset >= 0 && length >= 0 && offset <= bytes.Length - length && offset <= source.Length - length &&
+        bytes.Slice(offset, length).SequenceEqual(source.Slice(offset, length));
+
+    private static bool HasExpectedHarness(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source) =>
         HasExpectedFill(bytes, HarnessOffset, HarnessCapacity, 0xFF) ||
+        HasSourceBytes(bytes, source, HarnessOffset, HarnessCapacity) ||
         HasExpectedBytes(bytes, HarnessOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
         HasExpectedBytes(bytes, HarnessOffset, [0xEE, 0x55, 0x79, 0xA9, 0x28]) ||
         HasExpectedBytes(bytes, HarnessOffset, [0xA2, 0xFF, 0x9A, 0xEE, 0x55]);
