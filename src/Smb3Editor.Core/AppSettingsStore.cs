@@ -7,7 +7,8 @@ public sealed record AppSettingsV1(
     string? LastRomPath = null,
     string? EmulatorPath = null,
     IReadOnlyList<string>? EmulatorArguments = null,
-    string PlayMode = "rom")
+    string PlayMode = "rom",
+    bool? GroupCatalogVariants = null)
 {
     public const int CurrentFormatVersion = 1;
 }

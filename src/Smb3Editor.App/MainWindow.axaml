@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:Smb3Editor.App"
         x:Class="Smb3Editor.App.MainWindow"
+        x:Name="MainWindowRoot"
         Title="Warp Whistle"
         Width="1440"
         Height="900"
@@ -147,39 +148,57 @@
           <TabItem Header="Items">
             <Border Background="#111923" Padding="2">
               <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="6">
-                <TextBox x:Name="CatalogSearchBox" PlaceholderText="Search objects and enemies" TextChanged="CatalogFilterChanged" />
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="3">
-                  <ToggleButton x:Name="CatalogAllFilter" Tag="0" Content="All" IsChecked="True" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogObjectsFilter" Tag="1" Content="Objects" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogEnemiesFilter" Tag="2" Content="Sprites" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogRecentFilter" Tag="3" Content="Recent" Padding="7,2" Click="CatalogFilterTab_Click" />
-                </StackPanel>
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
-                  <ToggleButton x:Name="CatalogGridToggle" Content="Grid" IsChecked="True" Click="CatalogViewChanged" />
-                  <ToggleButton x:Name="CatalogListToggle" Content="List" Click="CatalogViewChanged" />
-                  <TextBlock Text="Tile size" VerticalAlignment="Center" Margin="8,0,0,0" />
-                  <Slider x:Name="CatalogTileSizeSlider" Minimum="52" Maximum="112" Value="72" Width="82" />
-                </StackPanel>
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+                    <ComboBox x:Name="CatalogScopeBox" SelectedIndex="0" SelectionChanged="CatalogScopeChanged">
+                      <ComboBoxItem Content="All items" />
+                      <ComboBoxItem Content="Objects" />
+                      <ComboBoxItem Content="Sprites" />
+                      <ComboBoxItem Content="Recent" />
+                      <ComboBoxItem Content="Used in level" />
+                    </ComboBox>
+                    <ComboBox x:Name="CatalogViewBox" Grid.Column="1" Width="72" SelectedIndex="0" SelectionChanged="CatalogViewChanged">
+                      <ComboBoxItem Content="Grid" />
+                      <ComboBoxItem Content="List" />
+                    </ComboBox>
+                    <ToggleButton x:Name="CatalogGroupVariantsToggle" Grid.Column="2" Content="Grouped" IsChecked="True" Click="GroupCatalogVariants_Click" />
+                </Grid>
+                <TextBox Grid.Row="1" x:Name="CatalogSearchBox" PlaceholderText="Search this collection" TextChanged="CatalogFilterChanged" />
+                <Grid x:Name="CatalogTileSizeControls" Grid.Row="2" ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                  <TextBlock Text="Tile size" VerticalAlignment="Center" />
+                  <Slider x:Name="CatalogTileSizeSlider" Grid.Column="1" Minimum="2" Maximum="7" Value="5" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="CatalogTileSizeChanged" />
+                </Grid>
                 <ScrollViewer Grid.Row="3">
                   <Grid>
-                    <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged">
+                    <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged" SizeChanged="CatalogGridSizeChanged" Padding="0">
                       <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
                       <ListBox.Styles>
                         <Style Selector="ListBoxItem"><Setter Property="Padding" Value="2" /><Setter Property="Margin" Value="0" /><Setter Property="MinWidth" Value="0" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Background" Value="Transparent" /></Style>
                         <Style Selector="ListBoxItem:selected"><Setter Property="Background" Value="#3478A5" /></Style>
                       </ListBox.Styles>
                       <ListBox.ItemTemplate><DataTemplate>
-                        <Border Classes="catalog-tile" Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
+                        <Border Classes="catalog-tile" Width="{Binding CatalogTileSize, ElementName=MainWindowRoot}" Height="{Binding CatalogTileSize, ElementName=MainWindowRoot}" Margin="0" Padding="0" Background="#171A1F" BorderBrush="#30353D" BorderThickness="1" ToolTip.Tip="{Binding CatalogToolTip}" PointerPressed="CatalogItemPointerPressed">
                           <Grid>
                             <local:CatalogPreview Preview="{Binding Preview}" />
-                            <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                            <TextBlock Text="{Binding CardTitle}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                            <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 14,0 L 14,14 Z" Fill="Black" Width="14" Height="14" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 10,0 L 10,10 Z" Fill="#FF3856" Width="10" Height="10" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
                           </Grid>
                         </Border>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
                     <ListBox x:Name="CatalogListView" IsVisible="False" SelectionChanged="CatalogSelectionChanged">
                       <ListBox.ItemTemplate><DataTemplate>
-                        <StackPanel Orientation="Horizontal" Spacing="10" Margin="4"><TextBlock Text="{Binding PreviewGlyph}" Width="28" FontSize="20" Foreground="#9FD9FF"/><TextBlock Text="{Binding Display}" TextWrapping="Wrap" /></StackPanel>
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="4" PointerPressed="CatalogItemPointerPressed" ToolTip.Tip="{Binding CatalogToolTip}">
+                          <Border Width="44" Height="44" Background="#171A1F" BorderBrush="#30353D" BorderThickness="1">
+                            <Grid>
+                              <local:CatalogPreview Preview="{Binding Preview}" />
+                              <TextBlock Text="{Binding CardTitle}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="3" FontSize="10" />
+                              <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 12,0 L 12,12 Z" Fill="Black" Width="12" Height="12" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                              <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 8,0 L 8,8 Z" Fill="#FF3856" Width="8" Height="8" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            </Grid>
+                          </Border>
+                          <TextBlock Grid.Column="1" Text="{Binding CatalogDisplay}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                        </Grid>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
                   </Grid>
@@ -196,24 +215,7 @@
                   <StackPanel x:Name="PatchControls" Spacing="14">
                     <TextBlock x:Name="NoPatchesText" Text="No patches are included. Use the top-bar Patches button to add one." TextWrapping="Wrap" Foreground="#9FB0C4" />
                     <TextBlock x:Name="PatchLevelText" Text="Level overrides" Foreground="#9FB0C4" />
-                    <Border x:Name="QuickRetryCard" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" Padding="6" ToolTip.Tip="Normal death restarts the level without visiting the overworld.">
-                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                        <TextBlock Text="Quick Retry" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ComboBox x:Name="QuickRetryOverride" Grid.Column="1" Width="120" SelectionChanged="PatchOverrideChanged" />
-                      </Grid>
-                    </Border>
-                    <Border x:Name="QuitToMapCard" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" Padding="6" ToolTip.Tip="While paused, Select exits the level without completing it.">
-                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                        <TextBlock Text="Start + Select: Return to Map" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ComboBox x:Name="QuitToMapOverride" Grid.Column="1" Width="120" SelectionChanged="PatchOverrideChanged" />
-                      </Grid>
-                    </Border>
-                    <Border x:Name="ContinuousAutoScrollCard" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" Padding="6" ToolTip.Tip="Enhanced only: keeps horizontal auto-scroll moving until the level's stock camera boundary.">
-                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                        <TextBlock Text="Full-Level Auto-Scroll" FontWeight="SemiBold" VerticalAlignment="Center" />
-                        <ComboBox x:Name="ContinuousAutoScrollOverride" Grid.Column="1" Width="120" SelectionChanged="PatchOverrideChanged" />
-                      </Grid>
-                    </Border>
+                    <StackPanel x:Name="PatchOverrideList" Spacing="10" />
                   </StackPanel>
                 </StackPanel>
               </ScrollViewer>

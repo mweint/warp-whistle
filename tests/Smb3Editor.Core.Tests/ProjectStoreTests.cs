@@ -95,7 +95,8 @@ public sealed class ProjectStoreTests
             var saved = AppSettingsStore.Save(new AppSettingsV1(
                 LastRomPath: "C:/owned/game.nes",
                 EmulatorPath: "C:/emulators/mesen.exe",
-                EmulatorArguments: ["--fullscreen", "{rom}"]), path);
+                EmulatorArguments: ["--fullscreen", "{rom}"],
+                GroupCatalogVariants: false), path);
             var loaded = AppSettingsStore.Load(path);
 
             Assert.True(saved.IsSuccess);
@@ -103,6 +104,7 @@ public sealed class ProjectStoreTests
             Assert.Equal("C:/owned/game.nes", loaded.Value!.LastRomPath);
             Assert.Equal("C:/emulators/mesen.exe", loaded.Value.EmulatorPath);
             Assert.Equal(["--fullscreen", "{rom}"], loaded.Value.EmulatorArguments);
+            Assert.False(loaded.Value.GroupCatalogVariants);
             Assert.DoesNotContain("romBytes", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
         }
         finally

@@ -9,9 +9,9 @@ namespace Smb3Editor.App;
 public sealed partial class PatchManagerWindow : Window
 {
     private readonly Dictionary<string, (CheckBox Include, ComboBox Default)> _rows = new(StringComparer.Ordinal);
-    private readonly CheckBox _startSelectAsmExample = new() { Content = "Include ASM6f example" };
     private readonly PatchSettings _initial;
     private readonly IReadOnlyList<string> _initialExternalPatches;
+    private readonly IReadOnlyList<PatchDefinition> _definitions;
     private readonly Action<PatchSettings, IReadOnlyList<string>> _commit;
     private bool _dirty;
     private bool _closeApproved;
@@ -26,14 +26,16 @@ public sealed partial class PatchManagerWindow : Window
         _initial = initial;
         _initialExternalPatches = initialExternalPatches;
         _commit = commit;
+        var catalog = PatchCatalog.Discover();
+        _definitions = catalog.IsSuccess ? catalog.Value!.SelectMany(static package => package.Features).ToArray() : [];
         BuildRows();
     }
 
     private void BuildRows()
     {
-        foreach (var definition in PatchRegistry.BuiltIns)
+        foreach (var definition in _definitions)
         {
-            var current = GetSetting(definition.Id);
+            var current = _initial.Get(definition.Id);
             var include = new CheckBox { Content = "Include", IsChecked = current is not null };
             var defaultBox = new ComboBox
             {
@@ -85,35 +87,7 @@ public sealed partial class PatchManagerWindow : Window
             PatchList.Children.Add(row);
             _rows[definition.Id] = (include, defaultBox);
         }
-
-        _startSelectAsmExample.IsChecked = _initialExternalPatches.Contains("start-select-map", StringComparer.Ordinal);
-        _startSelectAsmExample.Click += (_, _) => _dirty = true;
-        PatchList.Children.Add(new Border
-        {
-            Background = new SolidColorBrush(Color.Parse("#182534")),
-            BorderBrush = new SolidColorBrush(Color.Parse("#3A506B")),
-            BorderThickness = new Avalonia.Thickness(1),
-            Padding = new Avalonia.Thickness(12),
-            Child = new StackPanel
-            {
-                Spacing = 6,
-                Children =
-                {
-                    new TextBlock { Text = "ASM6f example: Start + Select: Return to Map", FontWeight = FontWeight.SemiBold, FontSize = 16 },
-                    new TextBlock { Text = "A shipped external ASM patch package. While paused, Select returns to the map without completing the level. It is global-only and cannot be combined with the built-in Start + Select patch.", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.LightGray },
-                    _startSelectAsmExample
-                }
-            }
-        });
     }
-
-    private PatchSetting? GetSetting(string id) => id switch
-    {
-        "quick-retry" => _initial.QuickRetry,
-        "start-select-map" => _initial.StartSelectReturnToMap,
-        "continuous-auto-scroll" => _initial.ContinuousAutoScroll,
-        _ => null
-    };
 
     private void Save_Click(object? sender, RoutedEventArgs e)
     {
@@ -121,15 +95,12 @@ public sealed partial class PatchManagerWindow : Window
         {
             var row = _rows[id];
             if (row.Include.IsChecked != true) return null;
-            return new PatchSetting(row.Default.SelectedIndex == 1, GetSetting(id)?.LevelOverrides);
+            return new PatchSetting(row.Default.SelectedIndex == 1, _initial.Get(id)?.LevelOverrides);
         }
 
-        var externalPatches = _initialExternalPatches.Where(static id => id != "start-select-map").ToList();
-        if (_startSelectAsmExample.IsChecked == true) externalPatches.Add("start-select-map");
-        _commit(new PatchSettings(
-            Setting("quick-retry"),
-            Setting("start-select-map"),
-            Setting("continuous-auto-scroll")), externalPatches);
+        var settings = _initial;
+        foreach (var definition in _definitions) settings = settings.With(definition.Id, Setting(definition.Id));
+        _commit(settings, _initialExternalPatches);
         _closeApproved = true;
         Close();
     }

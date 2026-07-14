@@ -28,6 +28,8 @@ public sealed record EnemySpritePreview(
     int PixelHeight,
     IReadOnlyList<uint> ArgbPixels);
 
+public sealed record MetatilePreview(int PixelWidth, int PixelHeight, IReadOnlyList<uint> ArgbPixels);
+
 public interface ISmb3LevelRenderer
 {
     OperationResult<LevelRenderSnapshot> Render(RomImage rom, LevelDocument document, int? excludedElementIndex = null, IReadOnlyList<PaletteOverride>? paletteOverrides = null);
@@ -121,6 +123,33 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
 
     public static string? GetEnemyDescription(byte id) => DocumentedEnemies
         .LastOrDefault(item => item.Id == id)?.Description;
+
+    /// <summary>Composes a small Foundry-defined block layout using the user's verified ROM graphics.</summary>
+    public OperationResult<MetatilePreview> RenderMetatilePreview(
+        RomImage rom,
+        LevelDocument document,
+        IReadOnlyList<byte> metatiles,
+        int width,
+        int height,
+        IReadOnlyList<PaletteOverride>? paletteOverrides = null)
+    {
+        try
+        {
+            if (document.Tileset <= 0 || document.Tileset >= LayoutBankByTileset.Length)
+                return OperationResult<MetatilePreview>.Failure(Diagnostics.Error("PREVIEW_TILESET", "The preview tileset is not supported."));
+            if (width <= 0 || height <= 0 || metatiles.Count != width * height)
+                return OperationResult<MetatilePreview>.Failure(Diagnostics.Error("PREVIEW_LAYOUT", "The preview block layout has invalid dimensions."));
+
+            var pixels = ComposePixels(rom, document, metatiles, width, height, paletteOverrides);
+            return pixels.IsSuccess
+                ? OperationResult<MetatilePreview>.Success(new MetatilePreview(width * 16, height * 16, pixels.Value!))
+                : OperationResult<MetatilePreview>.Failure(pixels.Diagnostics.ToArray());
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IndexOutOfRangeException or OverflowException)
+        {
+            return OperationResult<MetatilePreview>.Failure(Diagnostics.Error("PREVIEW_RENDER", ex.Message));
+        }
+    }
 
     public static OperationResult<IReadOnlyList<uint>> ReadPalettePreview(
         RomImage rom, LevelDocument document, bool objects, int selection)

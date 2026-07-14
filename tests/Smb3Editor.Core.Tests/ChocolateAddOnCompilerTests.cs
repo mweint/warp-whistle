@@ -51,7 +51,7 @@ public sealed class PatchCompilerTests
     }
 
     [Fact]
-    public void GlobalOnlyPatchesUseTheDirectResolverInsteadOfScanningAnEmptyTable()
+    public void GlobalOnlyPatchesStoreZeroOverrideCountAndGlobalFlags()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
@@ -69,9 +69,8 @@ public sealed class PatchCompilerTests
         Assert.True(result.IsSuccess, string.Join(Environment.NewLine, result.Diagnostics));
         AssertHookTargetsEntryOpcode(result.Value!.RomBytes, 0x3CF9E, 0xA5);
         AssertHookTargetsEntryOpcode(result.Value.RomBytes, 0x3CE6D, 0xAD);
-        var runtime = result.Value!.RomBytes.Skip(0x3E250).Take(128).ToArray();
-        Assert.Contains("A90360", Convert.ToHexString(result.Value!.RomBytes.Skip(0x3E250).Take(128).ToArray()));
-        Assert.DoesNotContain("A200BD", Convert.ToHexString(result.Value.RomBytes.Skip(0x3E250).Take(128).ToArray()));
+        Assert.Equal(0x03, result.Value.RomBytes[0x3FF4F]);
+        Assert.Contains("AD3FFF", Convert.ToHexString(result.Value.RomBytes.Skip(0x3E250).Take(128).ToArray()));
     }
 
     [Fact]

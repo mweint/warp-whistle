@@ -117,13 +117,6 @@ public sealed class RomCompiler : IRomCompiler
             if (externalPatch.IsSuccess) output = externalPatch.Value!;
         }
 
-        var builtInStartSelect = project.Patches?.StartSelectReturnToMap;
-        if ((project.ExternalPatches ?? []).Contains("start-select-map", StringComparer.Ordinal) &&
-            (builtInStartSelect?.EnabledByDefault == true || builtInStartSelect?.LevelOverrides?.Values.Contains(true) == true))
-        {
-            diagnostics.Add(Diagnostics.Error("ASM_PATCH_COMBINATION", "The ASM6f Start + Select example cannot be combined with the built-in Start + Select patch."));
-        }
-
         if (project.OutputMode == RomOutputMode.EnhancedMmc3)
         {
             if (project.Patches?.HasEnabledOptions(source.Profile.Levels.Keys) == true)

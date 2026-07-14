@@ -26,7 +26,7 @@ public sealed class Asm6fAssembler
             return OperationResult<byte[]>.Failure(Diagnostics.Error("ASM6F_SOURCE", $"Patch source '{sourcePath}' was not found."));
         }
 
-        var outputPath = Path.Combine(Path.GetDirectoryName(sourcePath)!, $".warp-whistle-{Guid.NewGuid():N}.bin");
+        var outputPath = Path.Combine(Path.GetTempPath(), $"warp-whistle-{Guid.NewGuid():N}.bin");
         try
         {
             using var process = Process.Start(new ProcessStartInfo
@@ -68,8 +68,136 @@ public sealed class Asm6fAssembler
     }
 }
 
-public sealed record AsmPatchManifest(string Id, string DisplayName, string Source, IReadOnlyList<string>? SupportedProfiles = null, IReadOnlyList<AsmPatchWrite>? Writes = null);
-public sealed record AsmPatchWrite(int Offset, string? ExpectedHex, string? ExpectedFill, int Capacity, int OutputOffset, int OutputLength);
+public sealed record PatchRequirementManifest(
+    string Kind,
+    string Scope,
+    string Message,
+    int? EnemyId = null,
+    int? YMin = null,
+    int? YMax = null);
+
+public sealed record PatchFeatureManifest(
+    string Id,
+    string DisplayName,
+    string Description,
+    bool RecommendedDefault = false,
+    bool SupportsLevelOverrides = false,
+    int Flag = 0,
+    IReadOnlyList<PatchRequirementManifest>? Requirements = null);
+
+public sealed record PatchConfigurationManifest(string Kind, int Offset, int Capacity);
+
+public sealed record AsmPatchManifest(
+    string Id,
+    string DisplayName,
+    string Source,
+    int SchemaVersion = 1,
+    string Description = "",
+    bool RecommendedDefault = false,
+    bool SupportsLevelOverrides = false,
+    IReadOnlyList<string>? SupportedProfiles = null,
+    IReadOnlyList<AsmPatchWrite>? Writes = null,
+    IReadOnlyList<PatchFeatureManifest>? Features = null,
+    PatchConfigurationManifest? Configuration = null);
+
+public sealed record AsmPatchWrite(
+    int Offset,
+    string? ExpectedHex,
+    string? ExpectedFill,
+    int Capacity,
+    int OutputOffset,
+    int OutputLength,
+    string? FeatureId = null);
+
+public sealed record PatchDefinition(
+    string Id,
+    string PackageId,
+    string DisplayName,
+    string Description,
+    bool RecommendedDefault,
+    bool SupportsLevelOverrides,
+    IReadOnlyList<string> SupportedProfiles,
+    int Flag,
+    IReadOnlyList<PatchRequirementManifest> Requirements);
+
+public sealed record PatchPackage(string Directory, AsmPatchManifest Manifest, IReadOnlyList<PatchDefinition> Features);
+
+public static class PatchCatalog
+{
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
+    public static string? FindRoot()
+    {
+        foreach (var root in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        {
+            for (var directory = new DirectoryInfo(root); directory is not null; directory = directory.Parent)
+            {
+                var candidate = Path.Combine(directory.FullName, "patches");
+                if (Directory.Exists(candidate)) return candidate;
+            }
+        }
+        return null;
+    }
+
+    public static OperationResult<IReadOnlyList<PatchPackage>> Discover(string? root = null)
+    {
+        root ??= FindRoot();
+        if (root is null)
+            return OperationResult<IReadOnlyList<PatchPackage>>.Failure(Diagnostics.Error("PATCH_CATALOG", "The bundled patches folder was not found."));
+
+        var packages = new List<PatchPackage>();
+        var diagnostics = new List<Diagnostic>();
+        foreach (var directory in Directory.EnumerateDirectories(root).OrderBy(static path => path, StringComparer.Ordinal))
+        {
+            var manifestPath = Path.Combine(directory, "patch.json");
+            if (!File.Exists(manifestPath)) continue;
+            try
+            {
+                var manifest = JsonSerializer.Deserialize<AsmPatchManifest>(File.ReadAllText(manifestPath), JsonOptions);
+                if (manifest is null || manifest.SchemaVersion != 1 || string.IsNullOrWhiteSpace(manifest.Id) ||
+                    string.IsNullOrWhiteSpace(manifest.DisplayName) || string.IsNullOrWhiteSpace(manifest.Source))
+                {
+                    diagnostics.Add(Diagnostics.Error("PATCH_MANIFEST", $"{manifestPath} is missing required schemaVersion, id, displayName, or source fields."));
+                    continue;
+                }
+
+                var profiles = manifest.SupportedProfiles ?? [];
+                var featureManifests = manifest.Features is { Count: > 0 }
+                    ? manifest.Features
+                    : [new PatchFeatureManifest(
+                        manifest.Id,
+                        manifest.DisplayName,
+                        manifest.Description,
+                        manifest.RecommendedDefault,
+                        manifest.SupportsLevelOverrides)];
+                var features = featureManifests.Select(feature => new PatchDefinition(
+                    feature.Id,
+                    manifest.Id,
+                    feature.DisplayName,
+                    feature.Description,
+                    feature.RecommendedDefault,
+                    feature.SupportsLevelOverrides,
+                    profiles,
+                    feature.Flag,
+                    feature.Requirements ?? [])).ToArray();
+                packages.Add(new PatchPackage(directory, manifest, features));
+            }
+            catch (JsonException ex)
+            {
+                diagnostics.Add(Diagnostics.Error("PATCH_MANIFEST", $"{manifestPath}: {ex.Message}"));
+            }
+        }
+
+        var duplicate = packages.SelectMany(static package => package.Features)
+            .GroupBy(static feature => feature.Id, StringComparer.Ordinal)
+            .FirstOrDefault(static group => group.Count() > 1);
+        if (duplicate is not null)
+            diagnostics.Add(Diagnostics.Error("PATCH_MANIFEST", $"Patch id '{duplicate.Key}' is declared more than once."));
+        if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error))
+            return OperationResult<IReadOnlyList<PatchPackage>>.Failure(diagnostics.ToArray());
+        return OperationResult<IReadOnlyList<PatchPackage>>.Success(packages, diagnostics);
+    }
+}
 
 /// <summary>Applies one ASM6f source file whose output is mapped to verified ROM writes.</summary>
 public sealed class AsmPatchCompiler
@@ -81,7 +209,11 @@ public sealed class AsmPatchCompiler
 
     public AsmPatchCompiler(Asm6fAssembler? assembler = null) => _assembler = assembler ?? new Asm6fAssembler();
 
-    public OperationResult<byte[]> Apply(string packageDirectory, RomImage source, ReadOnlySpan<byte> compiledRom)
+    public OperationResult<byte[]> Apply(
+        string packageDirectory,
+        RomImage source,
+        ReadOnlySpan<byte> compiledRom,
+        IReadOnlySet<string>? enabledFeatures = null)
     {
         var manifestPath = Path.Combine(packageDirectory, "patch.json");
         if (!File.Exists(manifestPath)) return OperationResult<byte[]>.Failure(Diagnostics.Error("ASM_PATCH_MANIFEST", "patch.json was not found."));
@@ -115,6 +247,8 @@ public sealed class AsmPatchCompiler
         var output = compiledRom.ToArray();
         foreach (var write in writes)
         {
+            if (!string.IsNullOrWhiteSpace(write.FeatureId) && enabledFeatures is not null && !enabledFeatures.Contains(write.FeatureId))
+                continue;
             var outputLength = write.OutputLength == 0 ? assembled.Value!.Length - write.OutputOffset : write.OutputLength;
             if (write.Offset < 0 || write.Capacity <= 0 || write.Offset > output.Length - write.Capacity ||
                 write.OutputOffset < 0 || outputLength < 0 || write.OutputOffset > assembled.Value!.Length - outputLength || outputLength > write.Capacity)
