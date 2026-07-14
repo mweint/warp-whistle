@@ -72,6 +72,7 @@ public sealed partial class PatchManagerWindow : Window
                     {
                         title,
                         description,
+                        compatibility,
                         new StackPanel
                         {
                             Orientation = Orientation.Horizontal,

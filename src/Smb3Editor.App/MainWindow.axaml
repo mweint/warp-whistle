@@ -60,7 +60,7 @@
             </MenuFlyout>
           </SplitButton.Flyout>
         </SplitButton>
-        <ToggleButton x:Name="TracePlayLevelToggle" Content="Trace" ToolTip.Tip="Play Level with the bundled Mesen auto-scroll trace" />
+        <ToggleButton x:Name="TracePlayLevelToggle" Content="Trace" ToolTip.Tip="Launch the selected play mode with its bundled Mesen trace" />
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
         <Button Content="Clear level" Click="ClearLevel_Click" />
         <Button x:Name="UndoButton" Content="↶" Width="32" Click="Undo_Click" ToolTip.Tip="Undo (Ctrl+Z)" />

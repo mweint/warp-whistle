@@ -6,8 +6,8 @@
     <ApplicationIcon>Assets\warp-whistle.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
-    <!-- Local-only debugging. Normal and release builds do not ship trace tools. -->
-    <EnableTraceTools Condition="'$(EnableTraceTools)' == ''">false</EnableTraceTools>
+    <!-- Local builds keep tracing available; release publishing disables it explicitly. -->
+    <EnableTraceTools Condition="'$(EnableTraceTools)' == ''">true</EnableTraceTools>
     <DefineConstants Condition="'$(EnableTraceTools)' == 'true'">$(DefineConstants);WARPWHISTLE_TRACE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>

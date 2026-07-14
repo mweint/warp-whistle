@@ -443,12 +443,21 @@ public sealed partial class MainWindow : Window
 
     private async void PlayTest_Click(object? sender, RoutedEventArgs e)
     {
+        ClearPlayFeedback();
         RomStatusText.Text = "Preparing Play ROM...";
         if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
             ShowPlayFailure("Play ROM needs a configured emulator.");
+            return;
+        }
+
+        var tracePlayRom = TraceToolsEnabled && TracePlayLevelToggle.IsChecked == true;
+        if (tracePlayRom && !Path.GetFileNameWithoutExtension(EmulatorPathBox.Text!.Trim()).Contains("mesen", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_TRACE_EMULATOR", "Play ROM tracing requires Mesen or Mesen 2.")]);
+            ShowPlayFailure("Play ROM trace requires Mesen.");
             return;
         }
 
@@ -471,8 +480,43 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        IReadOnlyList<string> arguments;
+        if (tracePlayRom)
+        {
+            var logPath = Path.Combine(directory, "retry-trace.log");
+            var tracePath = Path.Combine(directory, "trace-retry.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom!.Profile.Id} SHA1={_rom.Sha1} TRACE=retry DIRECT_LEVEL=false\n";
+            var logWrite = AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false);
+            AddDiagnostics(logWrite.Diagnostics);
+            if (!logWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not create the Play ROM trace log.");
+                return;
+            }
+
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-retry.lua");
+            if (!File.Exists(bundledScript)) bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "retry-trace.lua");
+            if (!File.Exists(bundledScript))
+            {
+                AddDiagnostics([Diagnostics.Error("PLAY_TRACE_SCRIPT", "The bundled retry trace script is missing from this build.")]);
+                ShowPlayFailure("The Play ROM trace script is missing.");
+                return;
+            }
+
+            var scriptWrite = AtomicFile.Write(tracePath, Encoding.UTF8.GetBytes(File.ReadAllText(bundledScript).Replace("@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal)), maintainBackup: false);
+            AddDiagnostics(scriptWrite.Diagnostics);
+            if (!scriptWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not prepare the Play ROM trace script.");
+                return;
+            }
+            arguments = ["{rom}", tracePath];
+        }
+        else
+        {
+            arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
+                .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
         var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(emulatorPath, arguments), romPath);
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
@@ -481,7 +525,7 @@ public sealed partial class MainWindow : Window
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
     {
-        ClearPlayLevelFeedback();
+        ClearPlayFeedback();
         RomStatusText.Text = "Preparing Play Level...";
         if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
@@ -598,9 +642,14 @@ public sealed partial class MainWindow : Window
         else DesignerNotice.IsVisible = false;
     }
 
-    private void ClearPlayLevelFeedback()
+    private void ClearPlayFeedback()
     {
-        _diagnostics.RemoveAll(static diagnostic => diagnostic.Code.StartsWith("PLAY_LEVEL", StringComparison.Ordinal));
+        _diagnostics.RemoveAll(static diagnostic =>
+            diagnostic.Code.StartsWith("PLAY_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("PATCH_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("CONTINUOUS_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("ASM_PATCH", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("BUILD_", StringComparison.Ordinal));
         DesignerNotice.IsVisible = false;
         RefreshDiagnosticsList();
     }

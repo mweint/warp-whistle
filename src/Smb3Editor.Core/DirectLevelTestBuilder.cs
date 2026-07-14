@@ -36,7 +36,6 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     private const ushort EntryStubAddress = 0xE911;
     private const ushort PrepareHarnessAddress = 0xE932;
     private const ushort TestAutoScrollWrapperAddress = 0x9F10;
-    private const int AutoScrollWrapperLength = 35;
     private const ushort PatchRuntimeAddress = 0xE240;
     private const ushort PatchRuntimeEnd = 0xE2BF;
     private const ushort LevelPreparationEntry = 0x88C8;
@@ -107,8 +106,8 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         {
             var target = (ushort)(output[AutoScrollCallOffset + 1] | (output[AutoScrollCallOffset + 2] << 8));
             var sourceOffset = 0x3E010 + target - 0xE000;
-            autoScrollWrapper = output.AsSpan(sourceOffset, AutoScrollWrapperLength).ToArray();
-            if (!output.AsSpan(TestAutoScrollWrapperOffset, AutoScrollWrapperLength).ToArray().All(value => value == 0xFF))
+            autoScrollWrapper = output.AsSpan(sourceOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray();
+            if (!output.AsSpan(TestAutoScrollWrapperOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray().All(value => value == 0xFF))
             {
                 return OperationResult<DirectLevelTestArtifact>.Failure(
                     diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The disposable auto-scroll wrapper area is unavailable.")).ToArray());
