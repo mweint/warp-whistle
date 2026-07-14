@@ -10,7 +10,7 @@ public sealed class Asm6fAssembler
     private readonly string _executablePath;
 
     public Asm6fAssembler(string? executablePath = null) =>
-        _executablePath = executablePath ?? Path.Combine(AppContext.BaseDirectory, "asm6f_64.exe");
+        _executablePath = executablePath ?? BundledContentPaths.Asm6fPath;
 
     public OperationResult<byte[]> Assemble(string sourcePath)
     {
@@ -128,7 +128,7 @@ public static class PatchCatalog
 
     public static string? FindRoot()
     {
-        foreach (var root in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        foreach (var root in new[] { BundledContentPaths.RootDirectory, AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
         {
             for (var directory = new DirectoryInfo(root); directory is not null; directory = directory.Parent)
             {

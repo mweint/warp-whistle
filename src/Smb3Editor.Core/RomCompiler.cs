@@ -111,7 +111,7 @@ public sealed class RomCompiler : IRomCompiler
                 continue;
             }
 
-            var packageDirectory = Path.Combine(AppContext.BaseDirectory, "patches", patchId);
+            var packageDirectory = Path.Combine(BundledContentPaths.PatchesDirectory, patchId);
             var externalPatch = _asmPatchCompiler.Apply(packageDirectory, source, output);
             diagnostics.AddRange(externalPatch.Diagnostics);
             if (externalPatch.IsSuccess) output = externalPatch.Value!;

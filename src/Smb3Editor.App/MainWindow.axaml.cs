@@ -87,7 +87,7 @@ public sealed partial class MainWindow : Window
         TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
         OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
-        _catalogVariantFamilies = CatalogVariantFamilies.Load(Path.Combine(AppContext.BaseDirectory, "items.json"), out var itemsConfigError);
+        _catalogVariantFamilies = CatalogVariantFamilies.Load(BundledContentPaths.ItemGroupsPath, out var itemsConfigError);
         if (itemsConfigError is not null)
             AddDiagnostics([Diagnostics.Warning("ITEMS_CONFIG", itemsConfigError)]);
         if (SidebarTabs.Items.Count >= 2)
