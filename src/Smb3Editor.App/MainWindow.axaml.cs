@@ -1581,16 +1581,19 @@ public sealed partial class MainWindow : Window
 
     private List<CatalogEntry> BuildCatalog(int tileset)
     {
-        var items = ObjectCatalogNames.ForTileset(tileset)
-            .Select(item => new CatalogEntry(false, false, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})"))
-            .ToList();
-        items.AddRange(ObjectCatalogNames.VariableForTileset(tileset)
-            .Select(item => new CatalogEntry(false, true, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})")));
-        items.AddRange(Smb3LevelRenderer.EnemyCatalog
+        // Keep variable generators together and first. This makes shared
+        // structures such as ceiling/wall pipes discoverable instead of
+        // burying them after the entire fixed-object catalog.
+        var items = ObjectCatalogNames.VariableForTileset(tileset)
+            .Select(item => new CatalogEntry(false, true, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})"));
+        var fixedItems = ObjectCatalogNames.ForTileset(tileset)
+            .Select(item => new CatalogEntry(false, false, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})"));
+        var allItems = items.Concat(fixedItems).ToList();
+        allItems.AddRange(Smb3LevelRenderer.EnemyCatalog
             .OrderBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
             .Select(item => new CatalogEntry(true, false, item.Key, item.Value,
                 $"{item.Value} (${item.Key:X2}, {item.Key})")));
-        return items;
+        return allItems;
     }
 
     private void QueueCatalogPreviews(IReadOnlyList<CatalogEntry> entries, int tileset)

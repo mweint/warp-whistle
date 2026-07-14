@@ -41,8 +41,8 @@ internal static class ObjectCatalogNames
         "Small Cloud Run", "Dry Ground", "Underwater Ground", "Large Background Cloud",
         "Underwater Pit", "Brick Run", "Question Block Coin Run", "Coin Brick Run",
         "Wood Block Run", "Green Note Block Run", "Note Block Run", "Bouncing Wood Block Run",
-        "Coin Run", "Vertical Pipe to Alternate Area", "Vertical Pipe (No Entrance)",
-        "Vertical Pipe to Big Question Area", "Ceiling Pipe to Alternate Area",
+        "Coin Run", "Vertical Pipe to Alternate Area", "Vertical Pipe to Big Question Area",
+        "Vertical Pipe (No Entrance)", "Ceiling Pipe to Alternate Area",
         "Ceiling Pipe (No Entrance)", "Right-Wall Pipe to Alternate Area",
         "Right-Wall Pipe (No Entrance)", "Left-Wall Pipe to Alternate Area",
         "Left-Wall Pipe (No Entrance)", "Bullet Bill Cannon", "Cheep-Cheep Bridge",
@@ -62,12 +62,21 @@ internal static class ObjectCatalogNames
         [15] = "Brick Run", [16] = "Question Block Coin Run", [17] = "Coin Brick Run",
         [18] = "Wood Block Run", [19] = "Green Note Block Run", [20] = "Note Block Run",
         [21] = "Bouncing Wood Block Run", [22] = "Coin Run", [23] = "Vertical Pipe to Alternate Area",
-        [24] = "Vertical Pipe (No Entrance)", [25] = "Vertical Pipe to Big Question Area",
+        [24] = "Vertical Pipe to Big Question Area", [25] = "Vertical Pipe (No Entrance)",
         [26] = "Ceiling Pipe to Alternate Area", [27] = "Ceiling Pipe (No Entrance)",
         [28] = "Right-Wall Pipe to Alternate Area", [29] = "Right-Wall Pipe (No Entrance)",
         [30] = "Left-Wall Pipe to Alternate Area", [31] = "Left-Wall Pipe (No Entrance)",
         [32] = "Bullet Bill Cannon", [33] = "Cheep-Cheep Bridge", [34] = "P-Switch Coins"
     };
+
+    // These generator IDs are shared by the gameplay tilesets. They were
+    // previously exposed only for Plains/Fortress, which hid pipes and common
+    // runs from Hills, desert, airship, and other level catalogs.
+    private static readonly IReadOnlyList<NamedLevelObject> SharedVariableObjects =
+        PlainsVariableObjects
+            .Select((name, id) => new NamedLevelObject(id, name))
+            .Where(item => item.Id is >= 15 and <= 45)
+            .ToArray();
 
     private static readonly NamedLevelObject[] CommonObjects =
     [
@@ -270,6 +279,10 @@ internal static class ObjectCatalogNames
             _ => []
         };
 
+        // Variable generators are returned separately by
+        // VariableForTileset. Keeping them out of this fixed-object list
+        // avoids duplicate catalog entries and, more importantly, prevents
+        // selecting a shared pipe/run through the wrong encoder path.
         return specific
             .Concat(CommonObjects)
             .DistinctBy(static item => item.Id)
@@ -277,12 +290,20 @@ internal static class ObjectCatalogNames
             .ToArray();
     }
 
-    public static IReadOnlyList<NamedLevelObject> VariableForTileset(int tileset) => tileset switch
+    public static IReadOnlyList<NamedLevelObject> VariableForTileset(int tileset)
     {
-        1 => PlainsVariableObjects.Select((name, id) => new NamedLevelObject(id, name)).ToArray(),
-        2 => FortressVariableObjects.Select(item => new NamedLevelObject(item.Key, item.Value)).OrderBy(static item => item.Id).ToArray(),
-        _ => []
-    };
+        var specific = tileset switch
+        {
+            1 => PlainsVariableObjects.Select((name, id) => new NamedLevelObject(id, name)),
+            2 => FortressVariableObjects.Select(item => new NamedLevelObject(item.Key, item.Value)),
+            _ => []
+        };
+        return SharedVariableObjects
+            .Concat(specific)
+            .DistinctBy(static item => item.Id)
+            .OrderBy(static item => item.Id)
+            .ToArray();
+    }
 
     public static string Describe(int tileset, LevelElement element)
     {
@@ -294,12 +315,12 @@ internal static class ObjectCatalogNames
         string? name;
         if (element.Kind == LevelElementKind.VariableGenerator)
         {
-            name = tileset switch
-            {
-                1 when element.GeneratorId < PlainsVariableObjects.Length => PlainsVariableObjects[element.GeneratorId],
-                2 when FortressVariableObjects.TryGetValue(element.GeneratorId, out var fortressName) => fortressName,
-                _ => $"Variable object ${element.GeneratorId:X2}"
-            };
+            name = SharedVariableObjects.FirstOrDefault(item => item.Id == element.GeneratorId)?.Name
+                ?? (tileset == 1 && element.GeneratorId < PlainsVariableObjects.Length
+                    ? PlainsVariableObjects[element.GeneratorId]
+                    : tileset == 2 && FortressVariableObjects.TryGetValue(element.GeneratorId, out var fortressName)
+                        ? fortressName
+                        : $"Variable object ${element.GeneratorId:X2}");
         }
         else
         {
