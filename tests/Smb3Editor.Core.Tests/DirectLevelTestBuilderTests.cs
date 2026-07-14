@@ -64,13 +64,17 @@ public sealed class DirectLevelTestBuilderTests
 
         var project = ProjectDocumentV2.Create(source.Value) with
         {
-            Patches = new PatchSettings(new PatchSetting(true), new PatchSetting(true))
+            Patches = new PatchSettings(
+                ContinuousAutoScroll: new PatchSetting(
+                    LevelOverrides: new Dictionary<string, bool> { ["W1-4"] = true }))
         };
         var compiled = new RomCompiler().Compile(project, source.Value);
         Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
 
-        var direct = new DirectLevelTestBuilder().Build(compiled.Value!, source.Value, source.Value.Profile.Levels["W1-1"]);
+        var direct = new DirectLevelTestBuilder().Build(compiled.Value!, source.Value, source.Value.Profile.Levels["W1-4"]);
         Assert.True(direct.IsSuccess, string.Join(Environment.NewLine, direct.Diagnostics));
+        Assert.Equal(new byte[] { 0x20, 0x10, 0x9F }, direct.Value!.RomBytes.Skip(0x3CF3E).Take(3).ToArray());
+        Assert.Equal(new byte[] { 0xAD, 0x80, 0x05 }, direct.Value.RomBytes.Skip(0x3DF20).Take(3).ToArray());
     }
 
     [Fact]

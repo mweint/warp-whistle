@@ -69,6 +69,7 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         TracePlayRomButton.IsVisible = TraceToolsEnabled;
+        TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
         TracePlayRomMenuItem.IsVisible = TraceToolsEnabled;
         OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
@@ -84,6 +85,7 @@ public sealed partial class MainWindow : Window
         EditorCanvas.PersistentActionFeedbackCleared += ClearPersistentEditorFeedback;
         EditorCanvas.ZoomRequested += EditorCanvas_ZoomRequested;
         EditorCanvas.PanRequested += EditorCanvas_PanRequested;
+        EditorCanvas.EdgeScrollRequested += EditorCanvas_EdgeScrollRequested;
         EditorCanvas.CatalogPlacementRequested += PlaceCatalogAt;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
         EditorCanvas.CanvasItemSelected += ClearCatalogPasteSource;
@@ -209,6 +211,11 @@ public sealed partial class MainWindow : Window
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.S)
         {
             _ = SaveProjectAsync(forcePicker: _projectPath is null);
+            e.Handled = true;
+        }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.A && e.Source is not TextBox)
+        {
+            EditorCanvas.SelectAllItems();
             e.Handled = true;
         }
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.C)
@@ -446,6 +453,7 @@ public sealed partial class MainWindow : Window
             ShowPlayFailure("Play ROM needs a configured emulator.");
             return;
         }
+
         var artifact = CompileCurrentProject();
         if (!artifact.IsSuccess)
         {
@@ -504,15 +512,18 @@ public sealed partial class MainWindow : Window
         {
             var directory = WorkspacePaths.PlaytestDirectory;
             Directory.CreateDirectory(directory);
+            var useAutoScrollTrace = _document is not null &&
+                (_project?.Patches?.ContinuousAutoScroll ?? new()).IsEnabledFor(_document.AreaId);
+            var traceName = useAutoScrollTrace ? "autoscroll" : "retry";
             var romPath = Path.Combine(directory, "trace-playtest.nes");
-            var logPath = Path.Combine(directory, "retry-trace.log");
-            var scriptPath = Path.Combine(directory, "trace-retry.lua");
-            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom?.Profile.Id ?? "unknown"} SHA1={_rom?.Sha1 ?? "unknown"}\n";
+            var logPath = Path.Combine(directory, $"{traceName}-trace.log");
+            var scriptPath = Path.Combine(directory, $"trace-{traceName}.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom?.Profile.Id ?? "unknown"} SHA1={_rom?.Sha1 ?? "unknown"} AREA={_document?.AreaId ?? "unknown"} TRACE={traceName}\n";
             AddDiagnostics(AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false).Diagnostics);
 
-            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-retry.lua");
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, $"trace-{traceName}.lua");
             if (!File.Exists(bundledScript))
-                bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "retry-trace.lua");
+                bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", $"{traceName}-trace.lua");
             if (!File.Exists(bundledScript))
             {
                 AddDiagnostics([Diagnostics.Error("TRACE_SCRIPT", "The bundled Mesen trace script is missing from this build.")]);
@@ -560,6 +571,14 @@ public sealed partial class MainWindow : Window
         if (!await EnsureEmulatorConfiguredAsync())
         {
             ShowPlayFailure("Play Level needs a configured emulator.");
+            return;
+        }
+
+        var tracePlayLevel = TraceToolsEnabled && TracePlayLevelToggle.IsChecked == true;
+        if (tracePlayLevel && !Path.GetFileNameWithoutExtension(EmulatorPathBox.Text!.Trim()).Contains("mesen", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_TRACE_EMULATOR", "Play Level tracing requires Mesen or Mesen 2.")]);
+            ShowPlayFailure("Play Level trace requires Mesen.");
             return;
         }
 
@@ -616,9 +635,46 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        RomStatusText.Text = $"Launching {selectedLevel.DisplayName} as Small Mario";
-        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        RomStatusText.Text = tracePlayLevel
+            ? $"Tracing {selectedLevel.DisplayName} as Small Mario"
+            : $"Launching {selectedLevel.DisplayName} as Small Mario";
+        IReadOnlyList<string> arguments;
+        if (tracePlayLevel)
+        {
+            var logPath = Path.Combine(directory, "autoscroll-trace.log");
+            var tracePath = Path.Combine(directory, "trace-autoscroll.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom.Profile.Id} SHA1={_rom.Sha1} AREA={selectedLevel.AreaId} TRACE=autoscroll DIRECT_LEVEL=true\n";
+            var logWrite = AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false);
+            AddDiagnostics(logWrite.Diagnostics);
+            if (!logWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not create the Play Level trace log.");
+                return;
+            }
+
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-autoscroll.lua");
+            if (!File.Exists(bundledScript)) bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "autoscroll-trace.lua");
+            if (!File.Exists(bundledScript))
+            {
+                AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_TRACE_SCRIPT", "The bundled auto-scroll trace script is missing from this build.")]);
+                ShowPlayFailure("The Play Level trace script is missing.");
+                return;
+            }
+
+            var scriptWrite = AtomicFile.Write(tracePath, Encoding.UTF8.GetBytes(File.ReadAllText(bundledScript).Replace("@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal)), maintainBackup: false);
+            AddDiagnostics(scriptWrite.Diagnostics);
+            if (!scriptWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not prepare the Play Level trace script.");
+                return;
+            }
+            arguments = ["{rom}", tracePath];
+        }
+        else
+        {
+            arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
+                .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
         var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath);
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
@@ -1113,6 +1169,22 @@ public sealed partial class MainWindow : Window
         SetScrollOffset(offset.X - e.Delta.X, offset.Y - e.Delta.Y);
     }
 
+    private void EditorCanvas_EdgeScrollRequested(object? sender, CanvasEdgeScrollRequestedEventArgs e)
+    {
+        var point = e.CanvasPoint - new Avalonia.Vector(LevelScrollViewer.Offset.X, LevelScrollViewer.Offset.Y);
+        const double edge = 28;
+        const double step = 18;
+        var offset = LevelScrollViewer.Offset;
+        var x = offset.X;
+        var y = offset.Y;
+        if (point.X < edge) x = Math.Max(0, x - step);
+        else if (point.X > LevelScrollViewer.Bounds.Width - edge) x += step;
+        if (point.Y < edge) y = Math.Max(0, y - step);
+        else if (point.Y > LevelScrollViewer.Bounds.Height - edge) y += step;
+        offset = new Avalonia.Vector(x, y);
+        LevelScrollViewer.Offset = offset;
+    }
+
     private void SetScrollOffset(double x, double y) =>
         LevelScrollViewer.Offset = new Avalonia.Vector(
             Math.Clamp(x, 0, Math.Max(0, LevelScrollViewer.Extent.Width - LevelScrollViewer.Viewport.Width)),
@@ -1285,9 +1357,11 @@ public sealed partial class MainWindow : Window
             var settings = _project?.Patches ?? PatchSettings.None;
             var retryIncluded = settings.QuickRetry is not null;
             var quitIncluded = settings.StartSelectReturnToMap is not null;
+            var continuousIncluded = settings.ContinuousAutoScroll is not null;
             QuickRetryCard.IsVisible = retryIncluded;
             QuitToMapCard.IsVisible = quitIncluded;
-            NoPatchesText.IsVisible = !retryIncluded && !quitIncluded;
+            ContinuousAutoScrollCard.IsVisible = continuousIncluded;
+            NoPatchesText.IsVisible = !retryIncluded && !quitIncluded && !continuousIncluded;
 
             var choices = new[]
             {
@@ -1297,16 +1371,21 @@ public sealed partial class MainWindow : Window
             };
             QuickRetryOverride.ItemsSource = choices;
             QuitToMapOverride.ItemsSource = choices;
+            ContinuousAutoScrollOverride.ItemsSource = choices;
             var areaId = _document?.AreaId;
             var retry = settings.QuickRetry ?? new();
             var quit = settings.StartSelectReturnToMap ?? new();
+            var continuous = settings.ContinuousAutoScroll ?? new();
             PatchLevelText.Text = areaId is null ? "Select a level to set an override." : "Level override";
             bool? retryOverride = areaId is not null && retry.LevelOverrides is not null && retry.LevelOverrides.TryGetValue(areaId, out var retryValue) ? retryValue : null;
             bool? quitOverride = areaId is not null && quit.LevelOverrides is not null && quit.LevelOverrides.TryGetValue(areaId, out var quitValue) ? quitValue : null;
+            bool? continuousOverride = areaId is not null && continuous.LevelOverrides is not null && continuous.LevelOverrides.TryGetValue(areaId, out var continuousValue) ? continuousValue : null;
             QuickRetryOverride.SelectedItem = choices.First(item => item.Value == retryOverride);
             QuitToMapOverride.SelectedItem = choices.First(item => item.Value == quitOverride);
+            ContinuousAutoScrollOverride.SelectedItem = choices.First(item => item.Value == continuousOverride);
             QuickRetryOverride.IsEnabled = supported && areaId is not null;
             QuitToMapOverride.IsEnabled = supported && areaId is not null;
+            ContinuousAutoScrollOverride.IsEnabled = supported && areaId is not null;
         }
         finally
         {
@@ -1336,11 +1415,15 @@ public sealed partial class MainWindow : Window
     {
         if (_refreshingPatches || _project is null || _document is null || sender is not ComboBox box || box.SelectedItem is not PatchOverrideOption option) return;
         var settings = _project.Patches ?? PatchSettings.None;
-        var retry = settings.QuickRetry ?? new();
-        var quit = settings.StartSelectReturnToMap ?? new();
-        if (ReferenceEquals(box, QuickRetryOverride)) retry = WithLevelOverride(retry, _document.AreaId, option.Value);
-        if (ReferenceEquals(box, QuitToMapOverride)) quit = WithLevelOverride(quit, _document.AreaId, option.Value);
-        _project = _project with { Patches = settings with { QuickRetry = retry, StartSelectReturnToMap = quit } };
+        // Keep patches that have not been included in the project absent. A
+        // level override applies only to the visible, included patch.
+        var retry = settings.QuickRetry;
+        var quit = settings.StartSelectReturnToMap;
+        var continuous = settings.ContinuousAutoScroll;
+        if (ReferenceEquals(box, QuickRetryOverride)) retry = WithLevelOverride(retry ?? new(), _document.AreaId, option.Value);
+        if (ReferenceEquals(box, QuitToMapOverride)) quit = WithLevelOverride(quit ?? new(), _document.AreaId, option.Value);
+        if (ReferenceEquals(box, ContinuousAutoScrollOverride)) continuous = WithLevelOverride(continuous ?? new(), _document.AreaId, option.Value);
+        _project = _project with { Patches = settings with { QuickRetry = retry, StartSelectReturnToMap = quit, ContinuousAutoScroll = continuous } };
         MarkPatchesChanged();
     }
 
@@ -1418,6 +1501,8 @@ public sealed partial class MainWindow : Window
     {
         if (SaveButton is null || SaveStateText is null) return;
         SaveButton.IsEnabled = _project is not null;
+        if (UndoButton is not null) UndoButton.IsEnabled = _history.CanUndo;
+        if (RedoButton is not null) RedoButton.IsEnabled = _history.CanRedo;
         SaveStateText.Text = _isProjectDirty ? "Unsaved changes" : "Saved";
         SaveStateText.Foreground = _isProjectDirty ? Avalonia.Media.Brushes.Gold : Avalonia.Media.Brushes.MediumSeaGreen;
         Title = _isProjectDirty ? "Warp Whistle *" : "Warp Whistle";
@@ -1479,7 +1564,7 @@ public sealed partial class MainWindow : Window
         var enemies = Smb3LevelCodec.EncodeEnemies(_document);
         UpdateByteBudget(layout.Value?.Length ?? 0, _document.OriginalLayoutLength, enemies.Value?.Length ?? 0, _document.OriginalEnemyLength);
         SpaceText.Text = $"Layout: {layout.Value?.Length ?? 0} / {_document.OriginalLayoutLength} bytes\n" +
-                         $"Enemies: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
+                         $"Sprites: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
                          $"Used by: {string.Join(", ", _document.UsedBy)}";
     }
 
@@ -1487,7 +1572,7 @@ public sealed partial class MainWindow : Window
     {
         var layoutLeft = layoutCapacity - layoutUsed;
         var enemyLeft = enemyCapacity - enemyUsed;
-        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Enemies {enemyUsed}/{enemyCapacity}";
+        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Sprites {enemyUsed}/{enemyCapacity}";
         ByteBudgetText.Foreground = layoutLeft < 0 || enemyLeft < 0
             ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FF6B6B"))
             : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#9FB0C4"));
@@ -1793,10 +1878,25 @@ public sealed partial class MainWindow : Window
         var slot = GetPaletteSlot(objects, index);
         if (slot is null) return new(index, index.ToString(), []);
         var colors = PalettePreview.FromNesColors(slot.Colors);
-        var state = slot.IsModified ? "Modified" : "Stock";
-        var label = string.IsNullOrWhiteSpace(slot.Name) ? $"{index + 1} - {state}" : $"{index + 1} - {slot.Name} ({state})";
+        var tileset = TilesetDisplayName(_document?.Tileset ?? 0);
+        var label = string.IsNullOrWhiteSpace(slot.Name)
+            ? $"{tileset} · {index + 1}"
+            : $"{tileset} · {index + 1} - {slot.Name}";
         return new PaletteChoice(index, label, colors);
     }
+
+    private static string TilesetDisplayName(int tileset) => tileset switch
+    {
+        1 => "Plains",
+        2 => "Fortress",
+        3 or 14 => "Hills",
+        4 or 12 => "High-Up",
+        5 or 11 or 13 => "Plant",
+        6 or 7 or 8 => "Pipe Maze",
+        9 => "Desert",
+        10 => "Airship",
+        _ => $"Tileset {tileset}"
+    };
 
     private static readonly NamedValue[] MusicChoices =
     [

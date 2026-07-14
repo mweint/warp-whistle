@@ -16,7 +16,7 @@
     </ScrollViewer>
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
       <Button Content="Cancel" Click="Cancel_Click" />
-      <Button Content="Save" Click="Save_Click" />
+      <Button Content="💾" Width="34" ToolTip.Tip="Save patches" Click="Save_Click" />
     </StackPanel>
   </Grid>
 </Window>

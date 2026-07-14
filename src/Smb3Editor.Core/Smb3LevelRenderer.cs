@@ -163,10 +163,11 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
     {
         try
         {
-            if (!string.Equals(rom.Profile.Id, "us-prg1", StringComparison.Ordinal))
+            if (!string.Equals(rom.Profile.Id, "us-prg0", StringComparison.Ordinal) &&
+                !string.Equals(rom.Profile.Id, "us-prg1", StringComparison.Ordinal))
             {
                 return OperationResult<LevelRenderSnapshot>.Failure(
-                    Diagnostics.Error("RENDER_PROFILE", "Faithful graphics rendering is currently enabled for the verified US PRG1 revision."));
+                    Diagnostics.Error("RENDER_PROFILE", "Faithful graphics rendering requires a verified US PRG0 or PRG1 revision."));
             }
 
             if (document.Tileset <= 0 || document.Tileset >= LayoutBankByTileset.Length)
@@ -557,7 +558,38 @@ public sealed class Smb3LevelRenderer : ISmb3LevelRenderer
                 }
             }
 
-            previews[id] = new EnemySpritePreview(minX, minY, width, height, pixels);
+            // Parts are authored on fixed 8x16 cells and often include
+            // transparent padding. Crop to the actual decoded pixels so
+            // editor hitboxes and selection outlines match visible sprite
+            // art instead of the composed cell footprint.
+            var opaqueLeft = width;
+            var opaqueTop = height;
+            var opaqueRight = -1;
+            var opaqueBottom = -1;
+            for (var y = 0; y < height; y++)
+            for (var x = 0; x < width; x++)
+            {
+                if (pixels[(y * width) + x] == 0) continue;
+                opaqueLeft = Math.Min(opaqueLeft, x);
+                opaqueTop = Math.Min(opaqueTop, y);
+                opaqueRight = Math.Max(opaqueRight, x);
+                opaqueBottom = Math.Max(opaqueBottom, y);
+            }
+
+            if (opaqueRight >= opaqueLeft && opaqueBottom >= opaqueTop)
+            {
+                var croppedWidth = opaqueRight - opaqueLeft + 1;
+                var croppedHeight = opaqueBottom - opaqueTop + 1;
+                var cropped = new uint[croppedWidth * croppedHeight];
+                for (var y = 0; y < croppedHeight; y++)
+                    Array.Copy(pixels, ((opaqueTop + y) * width) + opaqueLeft, cropped, y * croppedWidth, croppedWidth);
+                previews[id] = new EnemySpritePreview(minX + opaqueLeft, minY + opaqueTop,
+                    croppedWidth, croppedHeight, cropped);
+            }
+            else
+            {
+                previews[id] = new EnemySpritePreview(minX, minY, width, height, pixels);
+            }
         }
 
         return previews;

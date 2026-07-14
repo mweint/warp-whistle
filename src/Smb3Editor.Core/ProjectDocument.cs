@@ -18,6 +18,18 @@ public sealed record EditorState(
 public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
 public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, string Name);
 
+public enum RomOutputMode
+{
+    Vanilla,
+    EnhancedMmc3
+}
+
+public enum RomStorageMode
+{
+    FixedSlots,
+    ExpandedBanks
+}
+
 /// <summary>One opt-in patch with a project default and explicit level overrides.</summary>
 public sealed record PatchSetting(
     bool EnabledByDefault = false,
@@ -35,7 +47,8 @@ public sealed record PatchSetting(
 /// </summary>
 public sealed record PatchSettings(
     PatchSetting? QuickRetry = null,
-    PatchSetting? StartSelectReturnToMap = null)
+    PatchSetting? StartSelectReturnToMap = null,
+    PatchSetting? ContinuousAutoScroll = null)
 {
     // Null settings mean no executable patches are included in a new project.
     // A setting is created only when the designer explicitly adds a patch in
@@ -45,7 +58,10 @@ public sealed record PatchSettings(
     public bool HasEnabledOptions(IEnumerable<string> areaIds) =>
         (QuickRetry ?? new()).EnabledByDefault ||
         (StartSelectReturnToMap ?? new()).EnabledByDefault ||
-        areaIds.Any(areaId => (QuickRetry ?? new()).IsEnabledFor(areaId) || (StartSelectReturnToMap ?? new()).IsEnabledFor(areaId));
+        (ContinuousAutoScroll ?? new()).EnabledByDefault ||
+        areaIds.Any(areaId => (QuickRetry ?? new()).IsEnabledFor(areaId) ||
+                              (StartSelectReturnToMap ?? new()).IsEnabledFor(areaId) ||
+                              (ContinuousAutoScroll ?? new()).IsEnabledFor(areaId));
 }
 
 public sealed record ProjectDocumentV2(
@@ -55,9 +71,11 @@ public sealed record ProjectDocumentV2(
     EditorState EditorState,
     IReadOnlyList<PaletteOverride>? PaletteOverrides = null,
     IReadOnlyList<PaletteSlotLabel>? PaletteSlotLabels = null,
-    PatchSettings? Patches = null)
+    PatchSettings? Patches = null,
+    RomOutputMode OutputMode = RomOutputMode.Vanilla,
+    RomStorageMode StorageMode = RomStorageMode.FixedSlots)
 {
-    public const int CurrentFormatVersion = 5;
+    public const int CurrentFormatVersion = 6;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
@@ -66,7 +84,9 @@ public sealed record ProjectDocumentV2(
         new EditorState(),
         [],
         [],
-        PatchSettings.None);
+        PatchSettings.None,
+        RomOutputMode.Vanilla,
+        RomStorageMode.FixedSlots);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)
     {

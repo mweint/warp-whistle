@@ -30,6 +30,11 @@ public sealed class CanvasPanRequestedEventArgs(Vector delta) : EventArgs
     public Vector Delta { get; } = delta;
 }
 
+public sealed class CanvasEdgeScrollRequestedEventArgs(Point canvasPoint) : EventArgs
+{
+    public Point CanvasPoint { get; } = canvasPoint;
+}
+
 public sealed record EditorActionFeedback(
     DiagnosticSeverity Severity,
     string Summary,
@@ -123,6 +128,7 @@ public sealed class LevelCanvas : Control
     public event EventHandler<LevelEditCommittedEventArgs>? EditCommitted;
     public event EventHandler<CanvasZoomRequestedEventArgs>? ZoomRequested;
     public event EventHandler<CanvasPanRequestedEventArgs>? PanRequested;
+    public event EventHandler<CanvasEdgeScrollRequestedEventArgs>? EdgeScrollRequested;
     public event Action<string>? SelectionDescriptionChanged;
     public event Action? CanvasItemSelected;
     public event Action<string>? LayerOrderFeedback;
@@ -230,6 +236,25 @@ public sealed class LevelCanvas : Control
     public void ClearSelection()
     {
         ClearSelectionState();
+        NotifySelectionChanged();
+        InvalidateVisual();
+    }
+
+    /// <summary>Selects every movable or removable item in the current area.</summary>
+    public void SelectAllItems()
+    {
+        if (_document is null) return;
+
+        ClearSelectionState();
+        foreach (var element in _document.Elements.Where(static item => item.Kind != LevelElementKind.Junction))
+            _selectedElements.Add(element.Index);
+        foreach (var enemy in _document.Enemies)
+            _selectedEnemies.Add(enemy.Index);
+
+        _selectedElement = _selectedElements.Count > 0 ? _selectedElements.First() : null;
+        _selectedEnemy = _selectedElements.Count == 0 && _selectedEnemies.Count > 0
+            ? _selectedEnemies.First()
+            : null;
         NotifySelectionChanged();
         InvalidateVisual();
     }
@@ -417,7 +442,10 @@ public sealed class LevelCanvas : Control
                     destination);
                 if (IsEnemySelected(enemy.Index))
                 {
-                    context.DrawRectangle(null, new Pen(Brushes.White, 2), destination.Inflate(2));
+                    // Selection follows the actual opaque sprite footprint.
+                    // SMB3 stores some commands at a pipe/base while their
+                    // visible art is offset above or beside it.
+                    context.DrawRectangle(null, new Pen(Brushes.White, 2), destination.Inflate(1));
                 }
 
                 continue;
@@ -546,7 +574,7 @@ public sealed class LevelCanvas : Control
         if (encoded.Value!.Length > _document.OriginalEnemyLength)
         {
             var extraBytes = encoded.Value.Length - _document.OriginalEnemyLength;
-            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Enemy data is over capacity", $"This area needs {extraBytes} more enemy byte{(extraBytes == 1 ? string.Empty : "s")}. Remove or replace enemies before exporting.", null, true, true));
+            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Sprite data is over capacity", $"This area needs {extraBytes} more sprite byte{(extraBytes == 1 ? string.Empty : "s")}. Remove or replace sprites before exporting.", null, true, true));
             return;
         }
         PersistentActionFeedbackCleared?.Invoke();
@@ -758,8 +786,7 @@ public sealed class LevelCanvas : Control
         }
 
         var hitEnemy = _document?.Enemies
-            .Where(item => EnemyContainsPoint(item, point) ||
-                           (Math.Abs(item.X - tileX) <= 1 && Math.Abs(item.Y - tileY) <= 1))
+            .Where(item => EnemyContainsPoint(item, point))
             .Select(static item => (int?)item.Index)
             .LastOrDefault();
 
@@ -863,6 +890,10 @@ public sealed class LevelCanvas : Control
             return;
         }
         var point = e.GetPosition(this);
+        if (_dragging)
+        {
+            EdgeScrollRequested?.Invoke(this, new CanvasEdgeScrollRequestedEventArgs(point));
+        }
         if (_marqueeSelecting)
         {
             _marqueeCurrent = point;
@@ -1489,18 +1520,19 @@ public sealed class LevelCanvas : Control
 
     private bool EnemyContainsPoint(EnemyElement enemy, Point point)
     {
-        var snapshot = _renderSnapshot;
-        if (snapshot is null || !snapshot.EnemySprites.TryGetValue(enemy.Id, out var preview))
+        if (_renderSnapshot?.EnemySprites.TryGetValue(enemy.Id, out var preview) == true)
         {
-            return false;
+            return new Rect(
+                ((enemy.X * 16) + preview.OffsetX) * _zoom,
+                ((enemy.Y * 16) + preview.OffsetY) * _zoom,
+                preview.PixelWidth * _zoom,
+                preview.PixelHeight * _zoom).Contains(point);
         }
 
-        var bounds = new Rect(
-            ((enemy.X * 16) + preview.OffsetX) * _zoom,
-            ((enemy.Y * 16) + preview.OffsetY) * _zoom,
-            preview.PixelWidth * _zoom,
-            preview.PixelHeight * _zoom);
-        return bounds.Contains(point);
+        // Unknown/unpreviewable sprites retain a conservative command-cell
+        // hit area rather than an arbitrary neighboring-tile radius.
+        return new Rect(enemy.X * ScaledTile, enemy.Y * ScaledTile,
+            ScaledTile, ScaledTile).Contains(point);
     }
 
     private void UpdateHoverTip(Point point)
@@ -1527,9 +1559,7 @@ public sealed class LevelCanvas : Control
             return;
         }
         var enemy = _document.Enemies.LastOrDefault(item =>
-            EnemyContainsPoint(item, point) ||
-            (!Smb3LevelRenderer.HasEnemyPreview(item.Id) &&
-             Math.Abs(item.X - tileX) <= 1 && Math.Abs(item.Y - tileY) <= 1));
+            EnemyContainsPoint(item, point));
         string? tip = enemy is not null ? ObjectCatalogNames.Describe(enemy) : null;
         if (tip is null)
         {

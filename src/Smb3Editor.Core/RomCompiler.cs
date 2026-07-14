@@ -10,6 +10,7 @@ public interface IRomCompiler
 public sealed class RomCompiler : IRomCompiler
 {
     private readonly PatchCompiler _patchCompiler = new();
+    private readonly EnhancedMmc3RomBuilder _enhancedBuilder = new();
 
     public OperationResult<BuildArtifact> Compile(ProjectDocumentV2 project, RomImage source)
     {
@@ -100,7 +101,32 @@ public sealed class RomCompiler : IRomCompiler
         }
         output = patches.Value!;
 
-        diagnostics.Add(Diagnostics.Info("BUILD_VERIFIED", "The compiled ROM preserves the source mapper and declared ROM size."));
+        if (project.OutputMode == RomOutputMode.EnhancedMmc3)
+        {
+            if (project.Patches?.HasEnabledOptions(source.Profile.Levels.Keys) == true)
+            {
+                diagnostics.Add(Diagnostics.Error(
+                    "ENHANCED_PATCH_COMBINATION",
+                    "Enhanced PRG expansion cannot yet be combined with executable patches; complete the generalized patch pipeline first."));
+            }
+            else
+            {
+                var expanded = _enhancedBuilder.Build(project, source, output);
+                diagnostics.AddRange(expanded.Diagnostics);
+                if (expanded.IsSuccess)
+                {
+                    output = expanded.Value!.RomBytes;
+                }
+            }
+        }
+
+        diagnostics.Add(project.OutputMode == RomOutputMode.EnhancedMmc3
+            ? Diagnostics.Info("BUILD_VERIFIED", "The enhanced build preserves mapper 4 and verified fixed-bank placement; PRG size is explicitly expanded.")
+            : Diagnostics.Info("BUILD_VERIFIED", "The compiled ROM preserves the source mapper and declared ROM size."));
+        if (diagnostics.Any(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error))
+        {
+            return OperationResult<BuildArtifact>.Failure(diagnostics.ToArray());
+        }
         return OperationResult<BuildArtifact>.Success(new BuildArtifact(output, diagnostics), diagnostics);
     }
 }

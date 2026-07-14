@@ -74,6 +74,43 @@ public sealed class PatchCompilerTests
         Assert.DoesNotContain("A200BD", Convert.ToHexString(result.Value.RomBytes.Skip(0x3E250).Take(128).ToArray()));
     }
 
+    [Fact]
+    public void ContinuousAutoScrollIsScopedToItsEnabledLevelAndHooksTheStockEndHandler()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var source = RomImage.Load(path);
+        Assert.True(source.IsSuccess, string.Join(Environment.NewLine, source.Diagnostics));
+        if (source.Value!.Profile.Id != "us-prg1") return;
+
+        var level = Smb3LevelCodec.Decode(source.Value, source.Value.Profile.Levels["W1-2"]);
+        Assert.True(level.IsSuccess, string.Join(Environment.NewLine, level.Diagnostics));
+        var controller = level.Value!.Enemies[0] with { Id = 211, X = 0x03, Y = 0x16 };
+        var project = ProjectDocumentV2.Create(source.Value).WithArea(level.Value with
+        {
+            Enemies = level.Value.Enemies.Select(enemy => enemy.Index == controller.Index ? controller : enemy).ToArray()
+        }) with
+        {
+            Patches = new PatchSettings(ContinuousAutoScroll: new PatchSetting(
+                LevelOverrides: new Dictionary<string, bool> { ["W1-2"] = true }))
+        };
+        var result = new RomCompiler().Compile(project, source.Value);
+
+        Assert.True(result.IsSuccess, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal(0x20, result.Value!.RomBytes[0x13C0B]);
+        Assert.Equal(0xEA, result.Value.RomBytes[0x13C0E]);
+        Assert.Equal(0xEA, result.Value.RomBytes[0x13C0F]);
+        Assert.Equal(0x20, result.Value.RomBytes[0x3CF3E]);
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E250, 128), [0x29, 0x04, 0xF0]));
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E250, 128), [0xAD, 0x0A, 0x7A, 0xC5, 0x22, 0xB0]));
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E250, 128), [0xAD, 0x80, 0x05, 0x09, 0x80, 0x8D, 0x80, 0x05]));
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E250, 128), [0xA9, 0x00, 0x8D, 0x0E, 0x7A, 0x68, 0x68, 0x60]));
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E921, 111), [0xAD, 0x80, 0x05, 0x10, 0x10, 0xAD, 0x74, 0x79, 0xF0, 0x0B, 0xA9, 0x00, 0x8D, 0x0E, 0x7A, 0xA9, 0x01, 0x8D, 0xFC, 0x05, 0x60]));
+        Assert.True(ContainsSequence(result.Value.RomBytes.AsSpan(0x3E250, 128), [0xA9, 0x08, 0x8D, 0x0E, 0x7A, 0xA9, 0x00, 0x8D, 0x0F, 0x7A, 0x8D, 0x11, 0x7A, 0x8D, 0x13, 0x7A, 0x68, 0x68, 0x60]));
+        Assert.Contains((byte)0x04, result.Value.RomBytes.AsSpan(0x3FF3A, 4).ToArray());
+    }
+
     private static void AssertHookTargetsEntryOpcode(byte[] rom, int hookOffset, byte expectedOpcode)
     {
         Assert.Equal(0x4C, rom[hookOffset]);

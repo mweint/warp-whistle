@@ -38,6 +38,8 @@ public sealed class PaletteEditorWindow : Window
     private int _colorIndex;
     private bool _refreshing;
     private bool _saved;
+    private Button? _undoButton;
+    private Button? _redoButton;
     private bool _dirty;
     private bool _closeApproved;
     private readonly Dictionary<(bool Objects, int Slot), PaletteSlotInfo> _drafts = [];
@@ -102,7 +104,15 @@ public sealed class PaletteEditorWindow : Window
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left, Spacing = 5 };
         var cancelButton = new Button { Content = "Cancel", MinWidth = 90 };
         cancelButton.Click += (_, _) => { _closeApproved = true; Close(); };
-        var saveButton = new Button { Content = "Save", MinWidth = 70 };
+        _undoButton = new Button { Content = "↶", Width = 32 };
+        _redoButton = new Button { Content = "↷", Width = 32 };
+        ToolTip.SetTip(_undoButton, "Undo (Ctrl+Z)");
+        ToolTip.SetTip(_redoButton, "Redo (Ctrl+Y)");
+        _undoButton.Click += (_, _) => UndoDraft();
+        _redoButton.Click += (_, _) => RedoDraft();
+        actions.Children.Add(_undoButton);
+        actions.Children.Add(_redoButton);
+        var saveButton = new Button { Content = "💾", Width = 34 };
         ToolTip.SetTip(saveButton, "Save changes");
         saveButton.Click += (_, _) => { _commit(_drafts.Values.ToArray()); _saved = true; _closeApproved = true; Close(); };
         actions.Children.Add(cancelButton);
@@ -111,6 +121,7 @@ public sealed class PaletteEditorWindow : Window
         root.Children.Add(actions);
         Content = root;
         RefreshFromHost();
+        UpdateHistoryButtons();
     }
 
     protected override void OnClosing(WindowClosingEventArgs e)
@@ -205,9 +216,29 @@ public sealed class PaletteEditorWindow : Window
             };
             ToolTip.SetTip(chip, $"Color {index + 1}: ${color:X2}");
             var selected = index;
-            chip.PointerPressed += (_, _) => OpenColorPicker(chip, objects, slot, selected);
+            chip.PointerPressed += (_, e) => PaletteChipPointerPressed(chip, objects, slot, selected, e);
             grid.Children.Add(chip);
         }
+    }
+
+    private void PaletteChipPointerPressed(Border chip, bool objects, int slot, int colorIndex, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(chip).Properties.IsRightButtonPressed)
+        {
+            var source = GetCurrentSlot(_objects, _slot);
+            if (source is not null && _colorIndex is >= 0 and < 16 && _objects == objects)
+            {
+                var sourceColor = source.Colors[_colorIndex];
+                _objects = objects;
+                _slot = slot;
+                _colorIndex = colorIndex;
+                SetColor(sourceColor);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        OpenColorPicker(chip, objects, slot, colorIndex);
     }
 
     private void OpenColorPicker(Control anchor, bool objects, int slot, int colorIndex)
@@ -321,6 +352,7 @@ public sealed class PaletteEditorWindow : Window
         _drafts[(slot.Objects, slot.Slot)] = slot;
         _dirty = true;
         _preview(_drafts.Values.ToArray());
+        UpdateHistoryButtons();
     }
 
     private void UndoDraft()
@@ -328,6 +360,7 @@ public sealed class PaletteEditorWindow : Window
         if (_undo.Count == 0) return;
         _redo.Push(CloneDrafts());
         RestoreDrafts(_undo.Pop());
+        UpdateHistoryButtons();
     }
 
     private void RedoDraft()
@@ -335,6 +368,7 @@ public sealed class PaletteEditorWindow : Window
         if (_redo.Count == 0) return;
         _undo.Push(CloneDrafts());
         RestoreDrafts(_redo.Pop());
+        UpdateHistoryButtons();
     }
 
     private void RestoreDrafts(Dictionary<(bool Objects, int Slot), PaletteSlotInfo> drafts)
@@ -347,6 +381,12 @@ public sealed class PaletteEditorWindow : Window
 
     private Dictionary<(bool Objects, int Slot), PaletteSlotInfo> CloneDrafts() =>
         _drafts.ToDictionary(static pair => pair.Key, static pair => pair.Value with { Colors = pair.Value.Colors.ToArray() });
+
+    private void UpdateHistoryButtons()
+    {
+        if (_undoButton is not null) _undoButton.IsEnabled = _undo.Count > 0;
+        if (_redoButton is not null) _redoButton.IsEnabled = _redo.Count > 0;
+    }
 
     private void PaletteEditorWindow_KeyDown(object? sender, KeyEventArgs e)
     {

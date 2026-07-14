@@ -16,7 +16,8 @@ internal sealed class UnsavedChangesDialog : Window
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
-        var save = new Button { Content = "Save", MinWidth = 82 };
+        var save = new Button { Content = "💾", MinWidth = 42 };
+        ToolTip.SetTip(save, "Save changes");
         var discard = new Button { Content = "Don't Save", MinWidth = 96 };
         var cancel = new Button { Content = "Cancel", MinWidth = 82 };
         save.Click += (_, _) => Close(UnsavedChangesChoice.Save);

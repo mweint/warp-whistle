@@ -69,6 +69,10 @@ public static class ProjectStore
             {
                 project = MigrateV4(project, diagnostics);
             }
+            if (project.FormatVersion == 5)
+            {
+                project = MigrateV5(project, diagnostics);
+            }
             if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
                 return OperationResult<ProjectDocumentV2>.Failure(
@@ -183,6 +187,17 @@ public static class ProjectStore
     private static ProjectDocumentV2 MigrateV4(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
     {
         diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 4 to format 5 with patch controls."));
-        return legacy with { FormatVersion = ProjectDocumentV2.CurrentFormatVersion, Patches = legacy.Patches ?? PatchSettings.None };
+        return legacy with { FormatVersion = 5, Patches = legacy.Patches ?? PatchSettings.None };
+    }
+
+    private static ProjectDocumentV2 MigrateV5(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 5 to format 6 with explicit vanilla/enhanced output modes."));
+        return legacy with
+        {
+            FormatVersion = ProjectDocumentV2.CurrentFormatVersion,
+            OutputMode = RomOutputMode.Vanilla,
+            StorageMode = RomStorageMode.FixedSlots
+        };
     }
 }

@@ -3,7 +3,7 @@ namespace Smb3Editor.Core.Tests;
 public sealed class Smb3LevelRendererTests
 {
     [Fact]
-    public void OptionalVerifiedPrg1RendersWorldOneOneFromRomData()
+    public void OptionalVerifiedRomRendersWorldOneOneFromRomData()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -59,7 +59,7 @@ public sealed class Smb3LevelRendererTests
     }
 
     [Fact]
-    public void OptionalVerifiedPrg1RendersEveryCatalogStageWithoutEscapingSandbox()
+    public void OptionalVerifiedRomRendersEveryCatalogStageWithoutEscapingSandbox()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -92,7 +92,7 @@ public sealed class Smb3LevelRendererTests
     }
 
     [Fact]
-    public void OptionalVerifiedPrg1CatalogHasNamedPreviewForEveryStockEnemy()
+    public void OptionalVerifiedRomCatalogHasNamedPreviewForEveryStockEnemy()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;

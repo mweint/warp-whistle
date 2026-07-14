@@ -28,8 +28,8 @@ public sealed class PalettePreview : Border
 
     public PalettePreview()
     {
-        Width = 162;
-        Height = 20;
+        Width = 80;
+        Height = 16;
         HorizontalAlignment = HorizontalAlignment.Left;
         BorderBrush = new SolidColorBrush(Color.Parse("#718399"));
         BorderThickness = new Thickness(1);
@@ -44,7 +44,7 @@ public sealed class PalettePreview : Border
         _chips.Children.Clear();
         foreach (var color in colors?.Take(16) ?? [])
         {
-            _chips.Children.Add(new Border { Width = 10, Height = 18, Background = color });
+            _chips.Children.Add(new Border { Width = 5, Height = 14, Background = color });
         }
     }
 }

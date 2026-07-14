@@ -27,12 +27,16 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     private const int TitleEntryOffset = 0x3C4AD;
     private const int PrepareLevelCallOffset = 0x3C937;
     private const int RestartExitOffset = 0x3CF9E;
+    private const int AutoScrollCallOffset = 0x3CF3E;
     private const int HarnessOffset = 0x3E921;
+    private const int TestAutoScrollWrapperOffset = 0x3DF20;
     // The entry stub
     // reproduces the stock map-to-level transition immediately before $88C8;
     // entering $88C8 directly leaves the title-screen NMI handler active.
     private const ushort EntryStubAddress = 0xE911;
     private const ushort PrepareHarnessAddress = 0xE932;
+    private const ushort TestAutoScrollWrapperAddress = 0x9F10;
+    private const int AutoScrollWrapperLength = 24;
     private const ushort PatchRuntimeAddress = 0xE240;
     private const ushort PatchRuntimeEnd = 0xE2BF;
     private const ushort LevelPreparationEntry = 0x88C8;
@@ -98,9 +102,30 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         }
 
         var output = compiledRom.RomBytes.ToArray();
+        byte[]? autoScrollWrapper = null;
+        if (HasJsrIntoRetryArea(output, AutoScrollCallOffset))
+        {
+            var target = (ushort)(output[AutoScrollCallOffset + 1] | (output[AutoScrollCallOffset + 2] << 8));
+            var sourceOffset = 0x3E010 + target - 0xE000;
+            autoScrollWrapper = output.AsSpan(sourceOffset, AutoScrollWrapperLength).ToArray();
+            if (!output.AsSpan(TestAutoScrollWrapperOffset, AutoScrollWrapperLength).ToArray().All(value => value == 0xFF))
+            {
+                return OperationResult<DirectLevelTestArtifact>.Failure(
+                    diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The disposable auto-scroll wrapper area is unavailable.")).ToArray());
+            }
+        }
+
+        // Play Level owns this complete temporary region. Remove any export-only
+        // retry/wrapper bytes before installing the disposable launch harness.
+        output.AsSpan(HarnessOffset, HarnessCapacity).Fill(0xFF);
         WriteJump(output, TitleEntryOffset, EntryStubAddress);
         WriteJsr(output, PrepareLevelCallOffset, PrepareHarnessAddress);
         WriteJump(output, RestartExitOffset, EntryStubAddress);
+        if (autoScrollWrapper is not null)
+        {
+            autoScrollWrapper.CopyTo(output, TestAutoScrollWrapperOffset);
+            WriteJsr(output, AutoScrollCallOffset, TestAutoScrollWrapperAddress);
+        }
         entryStub.CopyTo(output, HarnessOffset);
         prepareHarness.CopyTo(output, HarnessOffset + PrepareHarnessAddress - EntryStubAddress);
 

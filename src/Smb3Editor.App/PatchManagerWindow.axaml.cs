@@ -87,6 +87,7 @@ public sealed partial class PatchManagerWindow : Window
     {
         "quick-retry" => _initial.QuickRetry,
         "start-select-map" => _initial.StartSelectReturnToMap,
+        "continuous-auto-scroll" => _initial.ContinuousAutoScroll,
         _ => null
     };
 
@@ -99,7 +100,10 @@ public sealed partial class PatchManagerWindow : Window
             return new PatchSetting(row.Default.SelectedIndex == 1, GetSetting(id)?.LevelOverrides);
         }
 
-        _commit(new PatchSettings(Setting("quick-retry"), Setting("start-select-map")));
+        _commit(new PatchSettings(
+            Setting("quick-retry"),
+            Setting("start-select-map"),
+            Setting("continuous-auto-scroll")));
         _closeApproved = true;
         Close();
     }
