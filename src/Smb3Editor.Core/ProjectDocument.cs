@@ -73,7 +73,8 @@ public sealed record ProjectDocumentV2(
     IReadOnlyList<PaletteSlotLabel>? PaletteSlotLabels = null,
     PatchSettings? Patches = null,
     RomOutputMode OutputMode = RomOutputMode.Vanilla,
-    RomStorageMode StorageMode = RomStorageMode.FixedSlots)
+    RomStorageMode StorageMode = RomStorageMode.FixedSlots,
+    IReadOnlyList<string>? ExternalPatches = null)
 {
     public const int CurrentFormatVersion = 6;
 
@@ -86,7 +87,8 @@ public sealed record ProjectDocumentV2(
         [],
         PatchSettings.None,
         RomOutputMode.Vanilla,
-        RomStorageMode.FixedSlots);
+        RomStorageMode.FixedSlots,
+        []);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)
     {

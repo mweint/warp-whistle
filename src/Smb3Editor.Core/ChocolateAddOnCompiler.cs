@@ -15,7 +15,7 @@ public static class PatchRegistry
     [
         new("quick-retry", "Quick Retry", "After a normal death, restart the level without visiting the overworld.", true, true, ["us-prg1"]),
         new("start-select-map", "Start + Select: Return to Map", "While paused, Select leaves the level without completing it.", true, true, ["us-prg1"]),
-        new("continuous-auto-scroll", "Continuous Auto-Scroll", "Continues a stock horizontal Auto-Scroll controller after its authored script ends. Requires Auto-Scroll ($D3) with Y = 0x00-0x1F; X is its placement/trigger column.", false, true, ["us-prg1"])
+        new("continuous-auto-scroll", "Full-Level Auto-Scroll", "Extends a stock horizontal Auto-Scroll controller to the authored level end, including after an early goal, then stops cleanly. Requires Auto-Scroll ($D3) with Y = 0x00-0x1F; X is its placement/trigger column.", false, true, ["us-prg1"])
     ];
 }
 
@@ -34,12 +34,15 @@ public sealed class PatchCompiler
     private const int AutoScrollCallHookOffset = 0x3CF3E;
     private const int RuntimeOffset = 0x3E250;
     private const int RuntimeCapacity = 128;
+    private const int AutoScrollGoalHelperLength = 14;
+    private const int AutoScrollGoalHelperOffset = RuntimeOffset + RuntimeCapacity - AutoScrollGoalHelperLength;
     private const int RetryEntryOffset = 0x3E921;
     // The verified fixed-bank temporary area is shared with the direct-level
     // harness and provides 111 bytes before the following non-fill data.
     private const int RetryEntryCapacity = 111;
     private const int RetryStubCapacity = 76;
     private const ushort RuntimeAddress = 0xE240;
+    private const ushort AutoScrollGoalHelperAddress = RuntimeAddress + RuntimeCapacity - AutoScrollGoalHelperLength;
     private const ushort RetryEntryAddress = 0xE911;
     private const int AutoScrollCallWrapperOffset = RetryEntryOffset + RetryStubCapacity;
     private const ushort AutoScrollCallWrapperAddress = RetryEntryAddress + RetryStubCapacity;
@@ -108,7 +111,8 @@ public sealed class PatchCompiler
         var runtime = BuildRuntime(project, source);
         var retryEntry = CreateRetryEntryStub();
         var autoScrollCallWrapper = CreateAutoScrollCallWrapper();
-        if (runtime.Code.Length > RuntimeCapacity ||
+        var autoScrollGoalHelper = CreateAutoScrollGoalHelper();
+        if (runtime.Code.Length > RuntimeCapacity - (hasContinuousAutoScroll ? autoScrollGoalHelper.Length : 0) ||
             runtime.Configuration.Length > ConfigurationCapacity ||
             (runtime.HasExitOrQuitHooks && retryEntry.Length > RetryStubCapacity) ||
             (hasContinuousAutoScroll && autoScrollCallWrapper.Length > AutoScrollCallWrapperCapacity))
@@ -131,6 +135,7 @@ public sealed class PatchCompiler
             WriteAutoScrollEndHook(output, runtime.AutoScrollEndAddress);
             WriteJsr(output, AutoScrollCallHookOffset, AutoScrollCallWrapperAddress);
             autoScrollCallWrapper.CopyTo(output, AutoScrollCallWrapperOffset);
+            autoScrollGoalHelper.CopyTo(output, AutoScrollGoalHelperOffset);
         }
         runtime.Code.CopyTo(output, RuntimeOffset);
         runtime.Configuration.CopyTo(output, ConfigurationOffset);
@@ -141,7 +146,8 @@ public sealed class PatchCompiler
                                             !output.AsSpan(RetryEntryOffset, retryEntry.Length).SequenceEqual(retryEntry))) ||
             (hasContinuousAutoScroll && (!HasAutoScrollEndHook(output, runtime.AutoScrollEndAddress) ||
                                          !HasJsrTarget(output, AutoScrollCallHookOffset, AutoScrollCallWrapperAddress) ||
-                                         !output.AsSpan(AutoScrollCallWrapperOffset, autoScrollCallWrapper.Length).SequenceEqual(autoScrollCallWrapper))) ||
+                                         !output.AsSpan(AutoScrollCallWrapperOffset, autoScrollCallWrapper.Length).SequenceEqual(autoScrollCallWrapper) ||
+                                         !output.AsSpan(AutoScrollGoalHelperOffset, autoScrollGoalHelper.Length).SequenceEqual(autoScrollGoalHelper))) ||
             !output.AsSpan(RuntimeOffset, runtime.Code.Length).SequenceEqual(runtime.Code) ||
             !output.AsSpan(ConfigurationOffset, runtime.Configuration.Length).SequenceEqual(runtime.Configuration) ||
             output.Length != source.Bytes.Length)
@@ -154,7 +160,7 @@ public sealed class PatchCompiler
         return OperationResult<byte[]>.Success(output,
         [
             Diagnostics.Info("PATCH_READY", "Enhanced MMC3 patches were applied. This output is for compatible flash carts and repro boards."),
-            Diagnostics.Info("PATCH_SCOPE", "Quick Retry, Start + Select, and Continuous Auto-Scroll use their global defaults with any per-level overrides.")
+            Diagnostics.Info("PATCH_SCOPE", "Quick Retry, Start + Select, and Full-Level Auto-Scroll use their global defaults with any per-level overrides.")
         ]);
     }
 
@@ -456,14 +462,24 @@ public sealed class PatchCompiler
 
     private static byte[] CreateAutoScrollCallWrapper() =>
     [
-        0xAD, 0x80, 0x05, 0x10, 0x10, // only chocolate-extended controllers
-        0xAD, 0x74, 0x79, 0xF0, 0x0B, // only after the end card was collected
-        0xA9, 0x00,
-        0x8D, 0x0E, 0x7A,             // freeze camera; vanilla goal walk-off continues
+        0xAD, 0x80, 0x05,
+        0x2D, 0x74, 0x79, 0x10, 0x18, // only extended controllers after goal collection
         0xA9, 0x01,
         0x8D, 0xFC, 0x05,             // the goal card clears auto-camera mode; restore it
-        0x60,
+        0xAD, 0x0A, 0x7A, 0xC5, 0x22, // compare camera screen against Level_Width
+        0xA9, 0x00, 0xE9, 0x00, 0x29, 0x08, // $08 before the end; zero at/past it
+        0x8D, 0x0E, 0x7A,
+        0xA2, 0x00,
+        0x4C, (byte)(AutoScrollGoalHelperAddress & 0xFF), (byte)(AutoScrollGoalHelperAddress >> 8),
         0x4C, 0x00, 0xB9              // otherwise tail-call AutoScroll_Do
+    ];
+
+    private static byte[] CreateAutoScrollGoalHelper() =>
+    [
+        0x20, 0x22, 0xBF,             // apply horizontal auto-scroll velocity
+        0xAD, 0x0C, 0x7A, 0x85, 0xFD, // copy position to the visible camera
+        0xAD, 0x0A, 0x7A, 0x85, 0x12,
+        0x60
     ];
 
 
@@ -499,7 +515,7 @@ public sealed class PatchCompiler
                 : string.Empty;
             return OperationResult<bool>.Failure(Diagnostics.Error(
                 "CONTINUOUS_SCROLL_CONTROLLER",
-                $"{areaId} needs a horizontal Auto-Scroll controller for Continuous Auto-Scroll. Use Auto-Scroll with Y from 0x00 through 0x1F; X is its placement/trigger column.{scope}"));
+                $"{areaId} needs a horizontal Auto-Scroll controller for Full-Level Auto-Scroll. Use Auto-Scroll with Y from 0x00 through 0x1F; X is its placement/trigger column.{scope}"));
         }
 
         return OperationResult<bool>.Success(true);

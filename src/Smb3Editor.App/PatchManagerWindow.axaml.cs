@@ -9,19 +9,22 @@ namespace Smb3Editor.App;
 public sealed partial class PatchManagerWindow : Window
 {
     private readonly Dictionary<string, (CheckBox Include, ComboBox Default)> _rows = new(StringComparer.Ordinal);
+    private readonly CheckBox _startSelectAsmExample = new() { Content = "Include ASM6f example" };
     private readonly PatchSettings _initial;
-    private readonly Action<PatchSettings> _commit;
+    private readonly IReadOnlyList<string> _initialExternalPatches;
+    private readonly Action<PatchSettings, IReadOnlyList<string>> _commit;
     private bool _dirty;
     private bool _closeApproved;
 
-    public PatchManagerWindow() : this(PatchSettings.None, _ => { })
+    public PatchManagerWindow() : this(PatchSettings.None, [], (_, _) => { })
     {
     }
 
-    public PatchManagerWindow(PatchSettings initial, Action<PatchSettings> commit)
+    public PatchManagerWindow(PatchSettings initial, IReadOnlyList<string> initialExternalPatches, Action<PatchSettings, IReadOnlyList<string>> commit)
     {
         InitializeComponent();
         _initial = initial;
+        _initialExternalPatches = initialExternalPatches;
         _commit = commit;
         BuildRows();
     }
@@ -81,6 +84,26 @@ public sealed partial class PatchManagerWindow : Window
             PatchList.Children.Add(row);
             _rows[definition.Id] = (include, defaultBox);
         }
+
+        _startSelectAsmExample.IsChecked = _initialExternalPatches.Contains("start-select-map", StringComparer.Ordinal);
+        _startSelectAsmExample.Click += (_, _) => _dirty = true;
+        PatchList.Children.Add(new Border
+        {
+            Background = new SolidColorBrush(Color.Parse("#182534")),
+            BorderBrush = new SolidColorBrush(Color.Parse("#3A506B")),
+            BorderThickness = new Avalonia.Thickness(1),
+            Padding = new Avalonia.Thickness(12),
+            Child = new StackPanel
+            {
+                Spacing = 6,
+                Children =
+                {
+                    new TextBlock { Text = "ASM6f example: Start + Select: Return to Map", FontWeight = FontWeight.SemiBold, FontSize = 16 },
+                    new TextBlock { Text = "A shipped external ASM patch package. While paused, Select returns to the map without completing the level. It is global-only and cannot be combined with the built-in Start + Select patch.", TextWrapping = TextWrapping.Wrap, Foreground = Brushes.LightGray },
+                    _startSelectAsmExample
+                }
+            }
+        });
     }
 
     private PatchSetting? GetSetting(string id) => id switch
@@ -100,10 +123,12 @@ public sealed partial class PatchManagerWindow : Window
             return new PatchSetting(row.Default.SelectedIndex == 1, GetSetting(id)?.LevelOverrides);
         }
 
+        var externalPatches = _initialExternalPatches.Where(static id => id != "start-select-map").ToList();
+        if (_startSelectAsmExample.IsChecked == true) externalPatches.Add("start-select-map");
         _commit(new PatchSettings(
             Setting("quick-retry"),
             Setting("start-select-map"),
-            Setting("continuous-auto-scroll")));
+            Setting("continuous-auto-scroll")), externalPatches);
         _closeApproved = true;
         Close();
     }

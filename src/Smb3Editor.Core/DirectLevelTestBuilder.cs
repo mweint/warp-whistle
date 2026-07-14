@@ -36,7 +36,7 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     private const ushort EntryStubAddress = 0xE911;
     private const ushort PrepareHarnessAddress = 0xE932;
     private const ushort TestAutoScrollWrapperAddress = 0x9F10;
-    private const int AutoScrollWrapperLength = 24;
+    private const int AutoScrollWrapperLength = 35;
     private const ushort PatchRuntimeAddress = 0xE240;
     private const ushort PatchRuntimeEnd = 0xE2BF;
     private const ushort LevelPreparationEntry = 0x88C8;
@@ -57,7 +57,7 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         }
 
         var directTest = Build(compiled.Value!, source, selectedLevel);
-        if (!directTest.IsSuccess || !(project.Patches ?? PatchSettings.None).HasEnabledOptions(source.Profile.Levels.Keys))
+        if (!directTest.IsSuccess || (!(project.Patches ?? PatchSettings.None).HasEnabledOptions(source.Profile.Levels.Keys) && (project.ExternalPatches?.Count ?? 0) == 0))
         {
             return directTest;
         }
@@ -66,7 +66,7 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
             directTest.Value!,
             directTest.Diagnostics.Append(Diagnostics.Warning(
                 "PLAY_LEVEL_PATCH_SCOPE",
-                "Play Level uses its own disposable restart harness. Test Quick Retry and Start + Select: Return to Map with Play ROM.")));
+                "Play Level uses its own disposable restart harness. Test executable patches with Play ROM.")));
     }
 
     public OperationResult<DirectLevelTestArtifact> Build(BuildArtifact compiledRom, RomImage source, LevelLocation selectedLevel)

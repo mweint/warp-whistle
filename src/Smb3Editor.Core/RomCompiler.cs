@@ -10,6 +10,7 @@ public interface IRomCompiler
 public sealed class RomCompiler : IRomCompiler
 {
     private readonly PatchCompiler _patchCompiler = new();
+    private readonly AsmPatchCompiler _asmPatchCompiler = new();
     private readonly EnhancedMmc3RomBuilder _enhancedBuilder = new();
 
     public OperationResult<BuildArtifact> Compile(ProjectDocumentV2 project, RomImage source)
@@ -100,6 +101,28 @@ public sealed class RomCompiler : IRomCompiler
             return OperationResult<BuildArtifact>.Failure(diagnostics.ToArray());
         }
         output = patches.Value!;
+
+        foreach (var patchId in project.ExternalPatches ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(patchId) || patchId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
+                !string.Equals(patchId, Path.GetFileName(patchId), StringComparison.Ordinal))
+            {
+                diagnostics.Add(Diagnostics.Error("ASM_PATCH_ID", $"'{patchId}' is not a valid bundled patch id."));
+                continue;
+            }
+
+            var packageDirectory = Path.Combine(AppContext.BaseDirectory, "patches", patchId);
+            var externalPatch = _asmPatchCompiler.Apply(packageDirectory, source, output);
+            diagnostics.AddRange(externalPatch.Diagnostics);
+            if (externalPatch.IsSuccess) output = externalPatch.Value!;
+        }
+
+        var builtInStartSelect = project.Patches?.StartSelectReturnToMap;
+        if ((project.ExternalPatches ?? []).Contains("start-select-map", StringComparer.Ordinal) &&
+            (builtInStartSelect?.EnabledByDefault == true || builtInStartSelect?.LevelOverrides?.Values.Contains(true) == true))
+        {
+            diagnostics.Add(Diagnostics.Error("ASM_PATCH_COMBINATION", "The ASM6f Start + Select example cannot be combined with the built-in Start + Select patch."));
+        }
 
         if (project.OutputMode == RomOutputMode.EnhancedMmc3)
         {

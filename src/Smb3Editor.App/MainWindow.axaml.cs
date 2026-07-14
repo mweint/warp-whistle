@@ -68,9 +68,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
-        TracePlayRomButton.IsVisible = TraceToolsEnabled;
         TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
-        TracePlayRomMenuItem.IsVisible = TraceToolsEnabled;
         OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
         if (SidebarTabs.Items.Count >= 2)
@@ -479,87 +477,6 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
         else RomStatusText.Text = "Launching Play ROM...";
-    }
-
-    private async void TracePlayRom_Click(object? sender, RoutedEventArgs e)
-    {
-        if (!TraceToolsEnabled) return;
-        RomStatusText.Text = "Preparing Play ROM trace...";
-        if (!await EnsureProjectSavedForPlayAsync()) return;
-        SaveGlobalEmulatorSettings();
-        if (!await EnsureEmulatorConfiguredAsync())
-        {
-            ShowPlayFailure("Trace Play ROM needs a configured emulator.");
-            return;
-        }
-
-        var emulatorPath = EmulatorPathBox.Text!.Trim();
-        if (!Path.GetFileNameWithoutExtension(emulatorPath).Contains("mesen", StringComparison.OrdinalIgnoreCase))
-        {
-            AddDiagnostics([Diagnostics.Error("TRACE_EMULATOR", "Trace Play ROM requires Mesen or Mesen 2 because it loads the bundled Lua trace.")]);
-            ShowPlayFailure("Trace Play ROM requires Mesen.");
-            return;
-        }
-
-        var artifact = CompileCurrentProject();
-        if (!artifact.IsSuccess)
-        {
-            ShowPlayFailure("Trace Play ROM is blocked — open Diagnostics for the exact reason.");
-            return;
-        }
-
-        try
-        {
-            var directory = WorkspacePaths.PlaytestDirectory;
-            Directory.CreateDirectory(directory);
-            var useAutoScrollTrace = _document is not null &&
-                (_project?.Patches?.ContinuousAutoScroll ?? new()).IsEnabledFor(_document.AreaId);
-            var traceName = useAutoScrollTrace ? "autoscroll" : "retry";
-            var romPath = Path.Combine(directory, "trace-playtest.nes");
-            var logPath = Path.Combine(directory, $"{traceName}-trace.log");
-            var scriptPath = Path.Combine(directory, $"trace-{traceName}.lua");
-            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom?.Profile.Id ?? "unknown"} SHA1={_rom?.Sha1 ?? "unknown"} AREA={_document?.AreaId ?? "unknown"} TRACE={traceName}\n";
-            AddDiagnostics(AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false).Diagnostics);
-
-            var bundledScript = Path.Combine(AppContext.BaseDirectory, $"trace-{traceName}.lua");
-            if (!File.Exists(bundledScript))
-                bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", $"{traceName}-trace.lua");
-            if (!File.Exists(bundledScript))
-            {
-                AddDiagnostics([Diagnostics.Error("TRACE_SCRIPT", "The bundled Mesen trace script is missing from this build.")]);
-                ShowPlayFailure("The bundled trace script is missing.");
-                return;
-            }
-
-            var script = File.ReadAllText(bundledScript).Replace(
-                "@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal);
-            var scriptWrite = AtomicFile.Write(scriptPath, Encoding.UTF8.GetBytes(script), maintainBackup: false);
-            AddDiagnostics(scriptWrite.Diagnostics);
-            if (!scriptWrite.IsSuccess)
-            {
-                ShowPlayFailure("Could not prepare the trace script.");
-                return;
-            }
-
-            var romWrite = AtomicFile.Write(romPath, artifact.Value!.RomBytes, maintainBackup: false);
-            AddDiagnostics(romWrite.Diagnostics);
-            if (!romWrite.IsSuccess)
-            {
-                ShowPlayFailure("Could not write the trace Play ROM.");
-                return;
-            }
-
-            var launched = _emulatorLauncher.Launch(
-                new EmulatorConfiguration(emulatorPath, ["{rom}", scriptPath]), romPath);
-            AddDiagnostics(launched.Diagnostics);
-            if (!launched.IsSuccess) ShowPlayFailure("Could not start Mesen with the trace.");
-            else RomStatusText.Text = "Tracing Play ROM — navigate and test normally";
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            AddDiagnostics([Diagnostics.Error("TRACE_PREPARE", $"Could not prepare the trace files: {ex.Message}")]);
-            ShowPlayFailure("Could not prepare the Play ROM trace.");
-        }
     }
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
@@ -1403,9 +1320,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var manager = new PatchManagerWindow(_project.Patches ?? PatchSettings.None, settings =>
+        var manager = new PatchManagerWindow(_project.Patches ?? PatchSettings.None, _project.ExternalPatches ?? [], (settings, externalPatches) =>
         {
-            _project = _project with { Patches = settings };
+            _project = _project with { Patches = settings, ExternalPatches = externalPatches };
             MarkPatchesChanged();
         });
         await manager.ShowDialog(this);
