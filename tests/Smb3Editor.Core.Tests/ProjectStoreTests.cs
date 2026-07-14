@@ -1,6 +1,7 @@
 namespace Smb3Editor.Core.Tests;
 
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 public sealed class ProjectStoreTests
 {
@@ -69,6 +70,7 @@ public sealed class ProjectStoreTests
             Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
             Assert.Equal(ProjectDocumentV2.CurrentFormatVersion, loaded.Value!.FormatVersion);
             Assert.Empty(loaded.Value.PaletteSlotLabels ?? []);
+        Assert.False((loaded.Value.Patches ?? PatchSettings.None).HasEnabledOptions(["W1-1"]));
             Assert.Equal(18, loaded.Value.ModifiedAreas[horizontal.AreaId].Elements[0].Y);
             Assert.Equal(18, loaded.Value.ModifiedAreas[horizontal.AreaId].Elements[0].OriginalY);
             var enemy = loaded.Value.ModifiedAreas[vertical.AreaId].Enemies[0];
@@ -93,7 +95,8 @@ public sealed class ProjectStoreTests
             var saved = AppSettingsStore.Save(new AppSettingsV1(
                 LastRomPath: "C:/owned/game.nes",
                 EmulatorPath: "C:/emulators/mesen.exe",
-                EmulatorArguments: ["--fullscreen", "{rom}"]), path);
+                EmulatorArguments: ["--fullscreen", "{rom}"],
+                GroupCatalogVariants: false), path);
             var loaded = AppSettingsStore.Load(path);
 
             Assert.True(saved.IsSuccess);
@@ -101,11 +104,47 @@ public sealed class ProjectStoreTests
             Assert.Equal("C:/owned/game.nes", loaded.Value!.LastRomPath);
             Assert.Equal("C:/emulators/mesen.exe", loaded.Value.EmulatorPath);
             Assert.Equal(["--fullscreen", "{rom}"], loaded.Value.EmulatorArguments);
+            Assert.False(loaded.Value.GroupCatalogVariants);
             Assert.DoesNotContain("romBytes", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void LegacyAddOnJsonMigratesToPatchesAndNewSavesUsePatches()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-patches-{Guid.NewGuid():N}.smb3proj");
+        var project = new ProjectDocumentV2(
+            4,
+            new ProjectSource("us-prg1", "abc", "def", "C:/owned/game.nes"),
+            new Dictionary<string, LevelDocument>(),
+            new EditorState(),
+            Patches: new PatchSettings(new PatchSetting(EnabledByDefault: true), new PatchSetting()));
+        try
+        {
+            var json = JsonNode.Parse(JsonSerializer.Serialize(project, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }))!.AsObject();
+            json["addOns"] = json["patches"]!.DeepClone();
+            json.Remove("patches");
+            File.WriteAllText(path, json.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+
+            var loaded = ProjectStore.Load(path);
+            Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+            Assert.True((loaded.Value!.Patches ?? PatchSettings.None).QuickRetry!.EnabledByDefault);
+            Assert.Contains(loaded.Diagnostics, item => item.Code == "PROJECT_MIGRATED");
+
+            var saved = ProjectStore.Save(loaded.Value, path);
+            Assert.True(saved.IsSuccess);
+            var output = File.ReadAllText(path);
+            Assert.Contains("\"patches\"", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("\"addOns\"", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.Delete(path);
+            File.Delete(path + ".bak");
         }
     }
 

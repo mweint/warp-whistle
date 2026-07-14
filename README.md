@@ -29,7 +29,7 @@ When no previous choice is saved, Warp Whistle opens the first verified ROM in `
 - Provides undo/redo, searchable catalogs, byte budgets, diagnostics, and project autosave.
 - Exports a new ROM or self-verifying BPS patch without overwriting the source.
 - Launches a user-selected external emulator with argument-safe process invocation.
-- Renders PRG1 stages from the user's ROM with SMB3's own bounded level generator, metatile tables, CHR graphics, and palettes.
+- Renders PRG0 and PRG1 stages from the user's ROM with SMB3's own bounded level generator, metatile tables, CHR graphics, and palettes.
 - Renders ROM-derived previews for common enemies, including Goombas, Koopas, Piranha Plants, fish, and Bullet Bills.
 - Redraws the generated game view immediately when supported level objects move.
 - Tracks the tiles written by each generator so its editor handle and selection outline follow the object it actually creates.
@@ -37,7 +37,9 @@ When no previous choice is saved, Warp Whistle opens the first verified ROM in `
 - Ctrl+mouse-wheel changes zoom in 10% steps from 25% through 800%.
 - Remembers and safely reopens the last verified ROM when it is still available.
 
-Generator anchors, junctions, and selection bounds remain editor overlays over the game view. Enemies whose appearance is dynamic or not yet mapped use a fallback position marker. The equivalent PRG0 generator execution profile remains follow-up fidelity work; unsafe or unknown data is blocked rather than guessed.
+Enhanced MMC3 storage is an explicit, unfinished chocolate-mode foundation. A project can opt into `EnhancedMmc3`/`ExpandedBanks` in the core model; it deterministically expands PRG1 from 256 KiB to 512 KiB, keeps the original fixed banks at the end, and reserves non-overlapping code, configuration, layout, palette, and music regions. Vanilla projects and exports remain fixed-size and byte-compatible. Runtime relocation and a user-facing mode switch are separate follow-up work.
+
+Generator anchors, junctions, and selection bounds remain editor overlays over the game view. Enemies whose appearance is dynamic or not yet mapped use a fallback position marker; unsafe or unknown data is blocked rather than guessed.
 
 ## Development
 

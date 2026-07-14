@@ -26,6 +26,10 @@ public sealed record RomProfile(
 
 public static class Smb3Profiles
 {
+    // Verified NES 2.0 header variant for the PRG0 payload. The ROM data is
+    // byte-identical to Prg0; only header bytes 7, 10, and 15 differ.
+    private const string Prg0Nes20Sha1 = "5f9019040fe23cb412a484e1ef430e59e589f9b4";
+
     private static readonly IReadOnlySet<int> PlainsFourByteGenerators = new HashSet<int>
     {
         11, 12, 35, 36, 37, 38, 39, 40, 41, 42
@@ -36,7 +40,7 @@ public static class Smb3Profiles
     };
     private static readonly IReadOnlySet<int> HillsFourByteGenerators = new HashSet<int>
     {
-        35, 36, 37, 38, 39, 40, 41, 42, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71
+        35, 36, 37, 38, 39, 40, 41, 42, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 80
     };
     private static readonly IReadOnlySet<int> HighIceFourByteGenerators = new HashSet<int>
     {
@@ -110,8 +114,11 @@ public static class Smb3Profiles
 
     public static IReadOnlyList<RomProfile> All { get; } = [Prg0, Prg1];
 
-    public static RomProfile? FindBySha1(string sha1) =>
-        All.FirstOrDefault(p => string.Equals(p.Sha1, sha1, StringComparison.OrdinalIgnoreCase));
+    public static RomProfile? FindBySha1(string sha1)
+    {
+        var profile = All.FirstOrDefault(p => string.Equals(p.Sha1, sha1, StringComparison.OrdinalIgnoreCase));
+        return profile ?? (string.Equals(sha1, Prg0Nes20Sha1, StringComparison.OrdinalIgnoreCase) ? Prg0 : null);
+    }
 
     public static RomProfile? FindById(string id) =>
         All.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal));

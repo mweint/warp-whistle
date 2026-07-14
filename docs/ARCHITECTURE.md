@@ -15,11 +15,20 @@ The source byte array is immutable by convention. `RomCompiler` always creates a
 5. `RomCompiler` validates and compiles edits from the original source.
 6. `BpsCodec` creates and reapplies the patch in memory before the UI writes it.
 
+When a project explicitly selects `EnhancedMmc3` with `ExpandedBanks`,
+`EnhancedMmc3RomBuilder` runs after the normal vanilla compile. It expands only
+verified US PRG1 images to 512 KiB, preserves mapper 4, moves the original two
+fixed 8 KiB banks to the final two banks, and allocates deterministic inserted
+regions for future code/configuration/layout/palette/music relocation. Runtime
+relocation is intentionally not implied by this foundation; vanilla remains the
+default and executable patches are rejected until their generalized relocation
+pipeline is complete.
+
 ## Rendering
 
-`Smb3LevelRenderer` encodes the current immutable document into isolated memory and executes the verified PRG1 ROM's own level loader with a hard instruction budget. Only the required PRG banks are mapped into a private 64 KiB `Cpu6502Sandbox`; generated metatiles are read from the sandbox's tile-memory region. Bounded write observation records which metatiles each generator affected so editor handles and hit testing use the generated result instead of assuming the encoded command coordinate is its visible top-left corner. The renderer then resolves the ROM's tileset metatile table, background CHR selectors, CHR bitplanes, and selected palette into an ARGB bitmap. No graphics are extracted into the project or distributed with the application.
+`Smb3LevelRenderer` encodes the current immutable document into isolated memory and executes the verified PRG0 or PRG1 ROM's own level loader with a hard instruction budget. Only the required PRG banks are mapped into a private 64 KiB `Cpu6502Sandbox`; generated metatiles are read from the sandbox's tile-memory region. Bounded write observation records which metatiles each generator affected so editor handles and hit testing use the generated result instead of assuming the encoded command coordinate is its visible top-left corner. The renderer then resolves the ROM's tileset metatile table, background CHR selectors, CHR bitplanes, and selected palette into an ARGB bitmap. No graphics are extracted into the project or distributed with the application.
 
-The Avalonia canvas caches that bitmap, scales it with nearest-neighbor interpolation, and draws editor-only anchors, junction bounds, screen boundaries, and selections above it. The renderer composes previews for common enemies directly from the source ROM's CHR banks and object palette; dynamic or not-yet-mapped enemies retain a fallback position marker. PRG0 execution requires a separate verified profile and currently falls back to diagnostics rather than speculative rendering.
+The Avalonia canvas caches that bitmap, scales it with nearest-neighbor interpolation, and draws editor-only anchors, junction bounds, screen boundaries, and selections above it. The renderer composes previews for common enemies directly from the source ROM's CHR banks and object palette; dynamic or not-yet-mapped enemies retain a fallback position marker.
 
 Horizontal generators use the full five-bit SMB3 row field. Vertical generators and enemies use orientation-specific screen/row packing normalized to the editor's 15-row vertical screens. Original raw position bytes remain attached to typed models so unrelated edits preserve reserved bits. Junction records remain read-only until symbolic destination editing is implemented.
 

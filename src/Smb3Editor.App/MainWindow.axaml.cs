@@ -1,17 +1,40 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.Text;
 using Smb3Editor.Core;
 
 namespace Smb3Editor.App;
 
+internal sealed record PatchOverrideOption(string Name, bool? Value)
+{
+    public override string ToString() => Name;
+}
+
 public sealed partial class MainWindow : Window
 {
+    public static readonly StyledProperty<double> CatalogTileSizeProperty =
+        AvaloniaProperty.Register<MainWindow, double>(nameof(CatalogTileSize), 60);
+
+    public double CatalogTileSize
+    {
+        get => GetValue(CatalogTileSizeProperty);
+        private set => SetValue(CatalogTileSizeProperty, value);
+    }
+
+#if WARPWHISTLE_TRACE
+    private static readonly bool TraceToolsEnabled = true;
+#else
+    private static readonly bool TraceToolsEnabled = false;
+#endif
+
     private readonly IRomCompiler _compiler = new RomCompiler();
     private readonly IDirectLevelTestBuilder _directLevelTestBuilder = new DirectLevelTestBuilder();
     private readonly IBpsCodec _bpsCodec = new BpsCodec();
@@ -23,6 +46,8 @@ public sealed partial class MainWindow : Window
     private EditorActionFeedback? _activePersistentFeedback;
     private readonly List<CatalogEntry> _catalog = [];
     private readonly ObservableCollection<CatalogEntry> _recentCatalog = [];
+    private readonly Dictionary<string, (bool IsEnemy, bool IsVariable, int Id)> _catalogVariantSelections = new(StringComparer.Ordinal);
+    private CatalogVariantFamilies _catalogVariantFamilies = null!;
     private readonly CatalogPreviewMemoryCache _catalogPreviewCache = new();
     private CancellationTokenSource? _catalogPreviewCancellation;
     private CatalogEntry? _activeCatalogEntry;
@@ -36,6 +61,8 @@ public sealed partial class MainWindow : Window
     private bool _refreshingCatalog;
     private bool _paletteObjectsEditing;
     private int _catalogFilter;
+    private int _catalogColumns = 5;
+    private bool _groupCatalogVariants = true;
     private byte[] _editingPaletteColors = new byte[16];
     private PaletteEditorWindow? _paletteEditor;
     private string _playMode = "rom";
@@ -44,6 +71,8 @@ public sealed partial class MainWindow : Window
     private bool _isProjectDirty;
     private bool _suppressLevelSelection;
     private bool _closingApproved;
+    private bool _refreshingPatches;
+    private readonly Dictionary<ComboBox, string> _patchOverrideIds = [];
 
     private static string LegacyPreviewCacheDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "preview-cache");
@@ -55,12 +84,17 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
+        TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
+        OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
+        _catalogVariantFamilies = CatalogVariantFamilies.Load(Path.Combine(AppContext.BaseDirectory, "items.json"), out var itemsConfigError);
+        if (itemsConfigError is not null)
+            AddDiagnostics([Diagnostics.Warning("ITEMS_CONFIG", itemsConfigError)]);
         if (SidebarTabs.Items.Count >= 2)
         {
             var properties = SidebarTabs.Items[0];
             SidebarTabs.Items.RemoveAt(0);
-            SidebarTabs.Items.Add(properties);
+            SidebarTabs.Items.Insert(1, properties);
         }
         EditorCanvas.EditCommitted += EditorCanvas_EditCommitted;
         EditorCanvas.ActiveRenderDiagnosticsChanged += SetActiveRenderDiagnostics;
@@ -68,11 +102,13 @@ public sealed partial class MainWindow : Window
         EditorCanvas.PersistentActionFeedbackCleared += ClearPersistentEditorFeedback;
         EditorCanvas.ZoomRequested += EditorCanvas_ZoomRequested;
         EditorCanvas.PanRequested += EditorCanvas_PanRequested;
+        EditorCanvas.EdgeScrollRequested += EditorCanvas_EdgeScrollRequested;
         EditorCanvas.CatalogPlacementRequested += PlaceCatalogAt;
         EditorCanvas.SelectionDescriptionChanged += text => SelectionText.Text = text;
         EditorCanvas.CanvasItemSelected += ClearCatalogPasteSource;
         _catalog.AddRange(BuildCatalog(1));
         ApplyCatalogFilter();
+        RefreshPatches();
         AddDiagnostics([Diagnostics.Info("READY", "Open a verified US PRG0 or PRG1 ROM to begin.")]);
         if (Directory.Exists(LegacyPreviewCacheDirectory))
             AddDiagnostics([Diagnostics.Info("LEGACY_PREVIEW_CACHE", "A legacy item-preview cache remains in LocalAppData. Warp Whistle no longer writes preview images there.")]);
@@ -82,6 +118,9 @@ public sealed partial class MainWindow : Window
         {
             _appSettings = settings.Value!;
         }
+        _groupCatalogVariants = _appSettings.GroupCatalogVariants != false;
+        CatalogGroupVariantsToggle.IsChecked = _groupCatalogVariants;
+        ApplyCatalogFilter();
         var configuredEmulator = !string.IsNullOrWhiteSpace(_appSettings.EmulatorPath) && File.Exists(_appSettings.EmulatorPath)
             ? _appSettings.EmulatorPath
             : FindExternalMesen();
@@ -194,6 +233,11 @@ public sealed partial class MainWindow : Window
             _ = SaveProjectAsync(forcePicker: _projectPath is null);
             e.Handled = true;
         }
+        else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.A && e.Source is not TextBox)
+        {
+            EditorCanvas.SelectAllItems();
+            e.Handled = true;
+        }
         else if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && e.Key == Key.C)
         {
             EditorCanvas.CopySelection();
@@ -297,6 +341,20 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
             AddDiagnostics([Diagnostics.Warning("WORKSPACE_OPEN", "Could not open the workspace folder.")]);
+        }
+    }
+
+    private void OpenTraceLogs_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!TraceToolsEnabled) return;
+        try
+        {
+            Directory.CreateDirectory(WorkspacePaths.PlaytestDirectory);
+            Process.Start(new ProcessStartInfo { FileName = WorkspacePaths.PlaytestDirectory, UseShellExecute = true });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            AddDiagnostics([Diagnostics.Warning("TRACE_LOG_OPEN", "Could not open the trace-log folder.")]);
         }
     }
 
@@ -407,6 +465,7 @@ public sealed partial class MainWindow : Window
 
     private async void PlayTest_Click(object? sender, RoutedEventArgs e)
     {
+        ClearPlayFeedback();
         RomStatusText.Text = "Preparing Play ROM...";
         if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
@@ -415,6 +474,15 @@ public sealed partial class MainWindow : Window
             ShowPlayFailure("Play ROM needs a configured emulator.");
             return;
         }
+
+        var tracePlayRom = TraceToolsEnabled && TracePlayLevelToggle.IsChecked == true;
+        if (tracePlayRom && !Path.GetFileNameWithoutExtension(EmulatorPathBox.Text!.Trim()).Contains("mesen", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_TRACE_EMULATOR", "Play ROM tracing requires Mesen or Mesen 2.")]);
+            ShowPlayFailure("Play ROM trace requires Mesen.");
+            return;
+        }
+
         var artifact = CompileCurrentProject();
         if (!artifact.IsSuccess)
         {
@@ -434,8 +502,43 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        IReadOnlyList<string> arguments;
+        if (tracePlayRom)
+        {
+            var logPath = Path.Combine(directory, "retry-trace.log");
+            var tracePath = Path.Combine(directory, "trace-retry.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom!.Profile.Id} SHA1={_rom.Sha1} TRACE=retry DIRECT_LEVEL=false\n";
+            var logWrite = AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false);
+            AddDiagnostics(logWrite.Diagnostics);
+            if (!logWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not create the Play ROM trace log.");
+                return;
+            }
+
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-retry.lua");
+            if (!File.Exists(bundledScript)) bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "retry-trace.lua");
+            if (!File.Exists(bundledScript))
+            {
+                AddDiagnostics([Diagnostics.Error("PLAY_TRACE_SCRIPT", "The bundled retry trace script is missing from this build.")]);
+                ShowPlayFailure("The Play ROM trace script is missing.");
+                return;
+            }
+
+            var scriptWrite = AtomicFile.Write(tracePath, Encoding.UTF8.GetBytes(File.ReadAllText(bundledScript).Replace("@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal)), maintainBackup: false);
+            AddDiagnostics(scriptWrite.Diagnostics);
+            if (!scriptWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not prepare the Play ROM trace script.");
+                return;
+            }
+            arguments = ["{rom}", tracePath];
+        }
+        else
+        {
+            arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
+                .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
         var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(emulatorPath, arguments), romPath);
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
@@ -444,12 +547,21 @@ public sealed partial class MainWindow : Window
 
     private async void PlayCurrentLevel_Click(object? sender, RoutedEventArgs e)
     {
+        ClearPlayFeedback();
         RomStatusText.Text = "Preparing Play Level...";
         if (!await EnsureProjectSavedForPlayAsync()) return;
         SaveGlobalEmulatorSettings();
         if (!await EnsureEmulatorConfiguredAsync())
         {
             ShowPlayFailure("Play Level needs a configured emulator.");
+            return;
+        }
+
+        var tracePlayLevel = TraceToolsEnabled && TracePlayLevelToggle.IsChecked == true;
+        if (tracePlayLevel && !Path.GetFileNameWithoutExtension(EmulatorPathBox.Text!.Trim()).Contains("mesen", StringComparison.OrdinalIgnoreCase))
+        {
+            AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_TRACE_EMULATOR", "Play Level tracing requires Mesen or Mesen 2.")]);
+            ShowPlayFailure("Play Level trace requires Mesen.");
             return;
         }
 
@@ -471,7 +583,10 @@ public sealed partial class MainWindow : Window
         AddDiagnostics(directTest.Diagnostics);
         if (!directTest.IsSuccess)
         {
-            ShowPlayFailure("Play Level could not prepare its temporary test ROM.");
+            var reason = directTest.Diagnostics.FirstOrDefault(static diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)?.Message;
+            ShowPlayFailure(string.IsNullOrWhiteSpace(reason)
+                ? "Play Level could not prepare its temporary test ROM."
+                : $"Play Level: {reason}");
             return;
         }
 
@@ -503,12 +618,62 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        RomStatusText.Text = $"Launching {selectedLevel.DisplayName} as Small Mario";
-        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        RomStatusText.Text = tracePlayLevel
+            ? $"Tracing {selectedLevel.DisplayName} as Small Mario"
+            : $"Launching {selectedLevel.DisplayName} as Small Mario";
+        IReadOnlyList<string> arguments;
+        if (tracePlayLevel)
+        {
+            var logPath = Path.Combine(directory, "autoscroll-trace.log");
+            var tracePath = Path.Combine(directory, "trace-autoscroll.lua");
+            var metadata = $"TRACE_META UTC={DateTimeOffset.UtcNow:O} PROFILE={_rom.Profile.Id} SHA1={_rom.Sha1} AREA={selectedLevel.AreaId} TRACE=autoscroll DIRECT_LEVEL=true\n";
+            var logWrite = AtomicFile.Write(logPath, Encoding.UTF8.GetBytes(metadata), maintainBackup: false);
+            AddDiagnostics(logWrite.Diagnostics);
+            if (!logWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not create the Play Level trace log.");
+                return;
+            }
+
+            var bundledScript = Path.Combine(AppContext.BaseDirectory, "trace-autoscroll.lua");
+            if (!File.Exists(bundledScript)) bundledScript = Path.Combine(AppContext.BaseDirectory, "tools", "autoscroll-trace.lua");
+            if (!File.Exists(bundledScript))
+            {
+                AddDiagnostics([Diagnostics.Error("PLAY_LEVEL_TRACE_SCRIPT", "The bundled auto-scroll trace script is missing from this build.")]);
+                ShowPlayFailure("The Play Level trace script is missing.");
+                return;
+            }
+
+            var scriptWrite = AtomicFile.Write(tracePath, Encoding.UTF8.GetBytes(File.ReadAllText(bundledScript).Replace("@@TRACE_LOG_PATH@@", logPath.Replace('\\', '/'), StringComparison.Ordinal)), maintainBackup: false);
+            AddDiagnostics(scriptWrite.Diagnostics);
+            if (!scriptWrite.IsSuccess)
+            {
+                ShowPlayFailure("Could not prepare the Play Level trace script.");
+                return;
+            }
+            arguments = ["{rom}", tracePath];
+        }
+        else
+        {
+            arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
+                .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        }
         var launched = _emulatorLauncher.Launch(new EmulatorConfiguration(EmulatorPathBox.Text!.Trim(), arguments), romPath);
         AddDiagnostics(launched.Diagnostics);
         if (!launched.IsSuccess) ShowPlayFailure("Could not start the emulator.");
+        else DesignerNotice.IsVisible = false;
+    }
+
+    private void ClearPlayFeedback()
+    {
+        _diagnostics.RemoveAll(static diagnostic =>
+            diagnostic.Code.StartsWith("PLAY_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("PATCH_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("CONTINUOUS_", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("ASM_PATCH", StringComparison.Ordinal) ||
+            diagnostic.Code.StartsWith("BUILD_", StringComparison.Ordinal));
+        DesignerNotice.IsVisible = false;
+        RefreshDiagnosticsList();
     }
 
     private void ShowPlayFailure(string message)
@@ -784,14 +949,10 @@ public sealed partial class MainWindow : Window
 
     private void CatalogFilterChanged(object? sender, TextChangedEventArgs e) => ApplyCatalogFilter();
 
-    private void CatalogFilterTab_Click(object? sender, RoutedEventArgs e)
+    private void CatalogScopeChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (sender is not ToggleButton { Tag: string tag } || !int.TryParse(tag, out var selected)) return;
-        _catalogFilter = selected;
-        CatalogAllFilter.IsChecked = selected == 0;
-        CatalogObjectsFilter.IsChecked = selected == 1;
-        CatalogEnemiesFilter.IsChecked = selected == 2;
-        CatalogRecentFilter.IsChecked = selected == 3;
+        if (sender is not ComboBox { SelectedIndex: >= 0 } box) return;
+        _catalogFilter = box.SelectedIndex;
         ApplyCatalogFilter();
     }
 
@@ -818,19 +979,115 @@ public sealed partial class MainWindow : Window
 
     private void RememberRecent(CatalogEntry entry)
     {
+        entry = entry.AsVariant();
         foreach (var existing in _recentCatalog.Where(item => item.IsEnemy == entry.IsEnemy && item.IsVariable == entry.IsVariable && item.Id == entry.Id).ToArray())
             _recentCatalog.Remove(existing);
         _recentCatalog.Insert(0, entry);
         while (_recentCatalog.Count > 24) _recentCatalog.RemoveAt(_recentCatalog.Count - 1);
     }
 
-    private void CatalogViewChanged(object? sender, RoutedEventArgs e)
+    private void GroupCatalogVariants_Click(object? sender, RoutedEventArgs e)
     {
-        var grid = ReferenceEquals(sender, CatalogGridToggle) ? CatalogGridToggle.IsChecked != false : CatalogListToggle.IsChecked == false;
-        CatalogGridToggle.IsChecked = grid;
-        CatalogListToggle.IsChecked = !grid;
+        if (sender is not ToggleButton item) return;
+        _groupCatalogVariants = item.IsChecked == true;
+        _appSettings = _appSettings with { GroupCatalogVariants = _groupCatalogVariants };
+        AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
+        ApplyCatalogFilter();
+    }
+
+
+    private void CatalogItemPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Control { DataContext: CatalogEntry { Variants.Count: > 1 } entry } target ||
+            e.GetCurrentPoint(target).Properties.PointerUpdateKind != PointerUpdateKind.RightButtonPressed)
+            return;
+        ShowCatalogVariantFlyout(target, entry);
+        e.Handled = true;
+    }
+
+    private void ShowCatalogVariantFlyout(Control target, CatalogEntry entry)
+    {
+        var variants = entry.Variants ?? [];
+        var flyout = new MenuFlyout();
+        foreach (var variant in variants)
+        {
+            var active = entry.SameIdentity(variant);
+            var item = new MenuItem
+            {
+                Tag = variant,
+                Header = new StackPanel
+                {
+                    Orientation = Avalonia.Layout.Orientation.Horizontal,
+                    Spacing = 8,
+                    Children =
+                    {
+                        new CatalogPreview
+                        {
+                            Preview = variant.Preview,
+                            Width = 36,
+                            Height = 36
+                        },
+                        new TextBlock
+                        {
+                            Text = active ? $"✓ {variant.Display}" : variant.Display,
+                            MaxWidth = 360,
+                            TextWrapping = TextWrapping.Wrap,
+                            FontWeight = active ? FontWeight.SemiBold : FontWeight.Normal,
+                            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+                        }
+                    }
+                }
+            };
+            Avalonia.Automation.AutomationProperties.SetName(item, $"Choose {variant.Display}");
+            item.Click += (_, args) =>
+            {
+                SelectCatalogVariant(variant);
+                args.Handled = true;
+            };
+            flyout.Items.Add(item);
+        }
+
+        flyout.ShowAt(target);
+    }
+
+    private void SelectCatalogVariant(CatalogEntry variant)
+    {
+        if (variant.FamilyId is null) return;
+        _catalogVariantSelections[variant.FamilyId] = variant.Identity;
+        _activeCatalogEntry = variant;
+        ApplyCatalogFilter();
+    }
+
+    private void CatalogViewChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox { SelectedIndex: >= 0 } box || CatalogGrid is null || CatalogListView is null) return;
+        var grid = box.SelectedIndex == 0;
         CatalogGrid.IsVisible = grid;
         CatalogListView.IsVisible = !grid;
+        if (CatalogTileSizeControls is not null) CatalogTileSizeControls.IsVisible = grid;
+    }
+
+    private void CatalogTileSizeChanged(object? sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (sender is not Slider slider) return;
+        var columns = Math.Clamp((int)Math.Round(e.NewValue), 2, 7);
+        if (Math.Abs(columns - e.NewValue) > 0.01)
+        {
+            slider.Value = columns;
+            return;
+        }
+        _catalogColumns = columns;
+        UpdateCatalogTileSize();
+    }
+
+    private void CatalogGridSizeChanged(object? sender, SizeChangedEventArgs e) => UpdateCatalogTileSize();
+
+    private void UpdateCatalogTileSize()
+    {
+        if (CatalogGrid is null || CatalogGrid.Bounds.Width <= 0) return;
+        // Each item owns four pixels of padding. Reserve scrollbar space so the
+        // requested count still fits after the catalog becomes scrollable.
+        CatalogTileSize = Math.Max(24, Math.Floor((CatalogGrid.Bounds.Width - 14) / _catalogColumns) - 4);
     }
 
     private void Undo_Click(object? sender, RoutedEventArgs e) => Undo();
@@ -879,6 +1136,7 @@ public sealed partial class MainWindow : Window
         _history.Record(e.Previous);
         _document = e.Current;
         MarkProjectChanged();
+        ApplyCatalogFilter();
         RefreshInspector();
         EditorCanvas.RefreshEnemyValidation();
     }
@@ -990,6 +1248,22 @@ public sealed partial class MainWindow : Window
     {
         var offset = LevelScrollViewer.Offset;
         SetScrollOffset(offset.X - e.Delta.X, offset.Y - e.Delta.Y);
+    }
+
+    private void EditorCanvas_EdgeScrollRequested(object? sender, CanvasEdgeScrollRequestedEventArgs e)
+    {
+        var point = e.CanvasPoint - new Avalonia.Vector(LevelScrollViewer.Offset.X, LevelScrollViewer.Offset.Y);
+        const double edge = 28;
+        const double step = 18;
+        var offset = LevelScrollViewer.Offset;
+        var x = offset.X;
+        var y = offset.Y;
+        if (point.X < edge) x = Math.Max(0, x - step);
+        else if (point.X > LevelScrollViewer.Bounds.Width - edge) x += step;
+        if (point.Y < edge) y = Math.Max(0, y - step);
+        else if (point.Y > LevelScrollViewer.Bounds.Height - edge) y += step;
+        offset = new Avalonia.Vector(x, y);
+        LevelScrollViewer.Offset = offset;
     }
 
     private void SetScrollOffset(double x, double y) =>
@@ -1149,7 +1423,109 @@ public sealed partial class MainWindow : Window
         }
 
         RefreshInspector();
+        RefreshPatches();
         EditorCanvas.RefreshEnemyValidation();
+    }
+
+    private void RefreshPatches()
+    {
+        _refreshingPatches = true;
+        try
+        {
+            var settings = _project?.Patches ?? PatchSettings.None;
+            var catalog = PatchCatalog.Discover();
+            var definitions = catalog.IsSuccess ? catalog.Value!.SelectMany(static package => package.Features).ToArray() : [];
+            var included = definitions.Where(definition => settings.Get(definition.Id) is not null).ToArray();
+            NoPatchesText.IsVisible = included.Length == 0;
+            PatchOverrideList.Children.Clear();
+            _patchOverrideIds.Clear();
+            var choices = new[]
+            {
+                new PatchOverrideOption("Inherit", null),
+                new PatchOverrideOption("Enabled", true),
+                new PatchOverrideOption("Disabled", false)
+            };
+            var areaId = _document?.AreaId;
+            var perLevel = included.Where(static definition => definition.SupportsLevelOverrides).ToArray();
+            PatchLevelText.Text = areaId is null ? "Select a level to set an override." : perLevel.Length == 0 ? "Included patches are global-only." : "Level override";
+            foreach (var definition in perLevel)
+            {
+                var setting = settings.Get(definition.Id)!;
+                bool? selected = areaId is not null && setting.LevelOverrides is not null && setting.LevelOverrides.TryGetValue(areaId, out var value) ? value : null;
+                var box = new ComboBox { Width = 120, ItemsSource = choices, SelectedItem = choices.First(item => item.Value == selected) };
+                box.IsEnabled = areaId is not null && definition.SupportedProfiles.Contains(_rom?.Profile.Id ?? "", StringComparer.Ordinal);
+                box.SelectionChanged += PatchOverrideChanged;
+                _patchOverrideIds[box] = definition.Id;
+                PatchOverrideList.Children.Add(new Border
+                {
+                    Background = new SolidColorBrush(Color.Parse("#182534")),
+                    BorderBrush = new SolidColorBrush(Color.Parse("#3A506B")),
+                    BorderThickness = new Avalonia.Thickness(1),
+                    Padding = new Avalonia.Thickness(6),
+                    Child = new Grid
+                    {
+                        ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                        ColumnSpacing = 8,
+                        Children =
+                        {
+                            new TextBlock { Text = definition.DisplayName, FontWeight = FontWeight.SemiBold, VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center },
+                            box
+                        }
+                    }
+                });
+                Grid.SetColumn(box, 1);
+            }
+            PatchControls.IsEnabled = _project is not null;
+        }
+        finally
+        {
+            _refreshingPatches = false;
+        }
+    }
+
+    private async void OpenPatchManager_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_project is null) return;
+        var catalog = PatchCatalog.Discover();
+        if (!catalog.IsSuccess)
+        {
+            AddDiagnostics(catalog.Diagnostics);
+            return;
+        }
+
+        var manager = new PatchManagerWindow(_project.Patches ?? PatchSettings.None, _project.ExternalPatches ?? [], (settings, externalPatches) =>
+        {
+            _project = _project with { Patches = settings, ExternalPatches = externalPatches };
+            MarkPatchesChanged();
+        });
+        await manager.ShowDialog(this);
+    }
+
+    private void PatchOverrideChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_refreshingPatches || _project is null || _document is null || sender is not ComboBox box || box.SelectedItem is not PatchOverrideOption option) return;
+        var settings = _project.Patches ?? PatchSettings.None;
+        // Keep patches that have not been included in the project absent. A
+        // level override applies only to the visible, included patch.
+        if (!_patchOverrideIds.TryGetValue(box, out var id) || settings.Get(id) is not { } setting) return;
+        _project = _project with { Patches = settings.With(id, WithLevelOverride(setting, _document.AreaId, option.Value)) };
+        MarkPatchesChanged();
+    }
+
+    private static PatchSetting WithLevelOverride(PatchSetting setting, string areaId, bool? value)
+    {
+        var overrides = new Dictionary<string, bool>(setting.LevelOverrides ?? new Dictionary<string, bool>(), StringComparer.Ordinal);
+        if (value is bool enabled) overrides[areaId] = enabled;
+        else overrides.Remove(areaId);
+        return setting with { LevelOverrides = overrides };
+    }
+
+    private void MarkPatchesChanged()
+    {
+        UpdateProjectEditorSettings();
+        _isProjectDirty = true;
+        UpdateSaveState();
+        RefreshPatches();
     }
 
     private void MarkProjectChanged()
@@ -1210,6 +1586,8 @@ public sealed partial class MainWindow : Window
     {
         if (SaveButton is null || SaveStateText is null) return;
         SaveButton.IsEnabled = _project is not null;
+        if (UndoButton is not null) UndoButton.IsEnabled = _history.CanUndo;
+        if (RedoButton is not null) RedoButton.IsEnabled = _history.CanRedo;
         SaveStateText.Text = _isProjectDirty ? "Unsaved changes" : "Saved";
         SaveStateText.Foreground = _isProjectDirty ? Avalonia.Media.Brushes.Gold : Avalonia.Media.Brushes.MediumSeaGreen;
         Title = _isProjectDirty ? "Warp Whistle *" : "Warp Whistle";
@@ -1271,7 +1649,7 @@ public sealed partial class MainWindow : Window
         var enemies = Smb3LevelCodec.EncodeEnemies(_document);
         UpdateByteBudget(layout.Value?.Length ?? 0, _document.OriginalLayoutLength, enemies.Value?.Length ?? 0, _document.OriginalEnemyLength);
         SpaceText.Text = $"Layout: {layout.Value?.Length ?? 0} / {_document.OriginalLayoutLength} bytes\n" +
-                         $"Enemies: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
+                         $"Sprites: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
                          $"Used by: {string.Join(", ", _document.UsedBy)}";
     }
 
@@ -1279,7 +1657,7 @@ public sealed partial class MainWindow : Window
     {
         var layoutLeft = layoutCapacity - layoutUsed;
         var enemyLeft = enemyCapacity - enemyUsed;
-        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Enemies {enemyUsed}/{enemyCapacity}";
+        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Sprites {enemyUsed}/{enemyCapacity}";
         ByteBudgetText.Foreground = layoutLeft < 0 || enemyLeft < 0
             ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FF6B6B"))
             : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#9FB0C4"));
@@ -1343,20 +1721,113 @@ public sealed partial class MainWindow : Window
         if (CatalogGrid is null || CatalogListView is null) return;
         var query = CatalogSearchBox?.Text?.Trim() ?? string.Empty;
         var type = _catalogFilter;
-        var source = type == 3 ? _recentCatalog.AsEnumerable() : _catalog;
-        var filtered = source
-            .Where(item => (type is 0 or 3 || (type == 1 && !item.IsEnemy) || (type == 2 && item.IsEnemy)) &&
-                           (string.IsNullOrWhiteSpace(query) || item.Display.Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                            item.Id.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ||
-                            $"${item.Id:X2}".Contains(query, StringComparison.OrdinalIgnoreCase)))
+        var source = type switch
+        {
+            3 => _recentCatalog.AsEnumerable(),
+            4 => UsedCatalogEntries(),
+            _ => _catalog
+        };
+        var scoped = source.Where(item => type is 0 or 3 or 4 ||
+                                                  type == 1 && !item.IsEnemy ||
+                                                  type == 2 && item.IsEnemy);
+        var displayed = _groupCatalogVariants
+            ? GroupCatalogEntries(scoped, expandFamilies: type is 3 or 4)
+            : OrderUnfurledCatalogEntries(scoped);
+        var filtered = displayed
+            .Where(item => string.IsNullOrWhiteSpace(query) ||
+                           item.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                           item.Id.ToString().Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                           $"${item.Id:X2}".Contains(query, StringComparison.OrdinalIgnoreCase))
             .ToArray();
         _refreshingCatalog = true;
         CatalogGrid.ItemsSource = filtered;
         CatalogListView.ItemsSource = filtered;
-        if (_activeCatalogEntry is null || !filtered.Contains(_activeCatalogEntry)) _activeCatalogEntry = filtered.FirstOrDefault();
+        // A canvas selection deliberately clears the catalog paste source so
+        // right-click duplicates the selected level item. Do not let an async
+        // preview/filter refresh silently make the first visible catalog card
+        // active again.
+        _activeCatalogEntry = _activeCatalogEntry is null
+            ? null
+            : filtered.FirstOrDefault(item => item.SameIdentity(_activeCatalogEntry));
         CatalogGrid.SelectedItem = _activeCatalogEntry;
         CatalogListView.SelectedItem = _activeCatalogEntry;
         _refreshingCatalog = false;
+    }
+
+    private IEnumerable<CatalogEntry> GroupCatalogEntries(IEnumerable<CatalogEntry> source, bool expandFamilies)
+    {
+        var entries = source.ToArray();
+        var firstIndexByFamily = entries
+            .Select((entry, index) => (Entry: entry, Index: index))
+            .Where(item => item.Entry.FamilySortId is not null)
+            .GroupBy(item => item.Entry.FamilySortId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Min(item => item.Index), StringComparer.Ordinal);
+        var firstIndexByNeighborhood = entries
+            .Select((entry, index) => (Entry: entry, Index: index))
+            .Where(item => item.Entry.NeighborhoodSortId is not null)
+            .GroupBy(item => item.Entry.NeighborhoodSortId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Min(item => item.Index), StringComparer.Ordinal);
+        var groups = entries
+            .GroupBy(item => item.FamilyId ?? $"single:{item.IsEnemy}:{item.IsVariable}:{item.Id}")
+            .Select((group, index) => (Group: group, Index: index))
+            .OrderBy(item => item.Group.First().NeighborhoodSortId is { } neighborhood && firstIndexByNeighborhood.TryGetValue(neighborhood, out var first)
+                ? first
+                : item.Index)
+            .ThenBy(item => item.Group.First().FamilySortId is { } family && firstIndexByFamily.TryGetValue(family, out var first)
+                ? first
+                : item.Index)
+            .ThenBy(item => item.Index);
+        foreach (var grouped in groups)
+        {
+            var group = grouped.Group;
+            var present = group.Select(item => item.AsVariant()).ToArray();
+            var firstPresent = present[0];
+            var variants = expandFamilies && firstPresent.FamilyId is not null
+                ? _catalog.Where(item => item.FamilyId == firstPresent.FamilyId).Select(item => item.AsVariant()).ToArray()
+                : present;
+            if (variants.Length < 2 || firstPresent.FamilyId is null)
+            {
+                yield return firstPresent;
+                continue;
+            }
+
+            var selected = _catalogVariantSelections.TryGetValue(firstPresent.FamilyId, out var identity)
+                ? variants.FirstOrDefault(item => item.Identity == identity) ?? firstPresent
+                : variants.FirstOrDefault(item => _activeCatalogEntry is not null && item.SameIdentity(_activeCatalogEntry)) ?? firstPresent;
+            yield return selected with { Variants = variants };
+        }
+    }
+
+    private static IEnumerable<CatalogEntry> OrderUnfurledCatalogEntries(IEnumerable<CatalogEntry> source)
+    {
+        // Preserve the catalog's natural order, but keep configured families
+        // adjacent even when they are displayed individually.
+        var entries = source.Select((entry, index) => (Entry: entry.AsVariant(), Index: index)).ToArray();
+        var firstIndexByFamily = entries
+            .Where(item => item.Entry.FamilySortId is not null)
+            .GroupBy(item => item.Entry.FamilySortId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Min(item => item.Index), StringComparer.Ordinal);
+        var firstIndexByNeighborhood = entries
+            .Where(item => item.Entry.NeighborhoodSortId is not null)
+            .GroupBy(item => item.Entry.NeighborhoodSortId!, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Min(item => item.Index), StringComparer.Ordinal);
+        return entries
+            .OrderBy(item => item.Entry.NeighborhoodSortId is { } neighborhood && firstIndexByNeighborhood.TryGetValue(neighborhood, out var first) ? first : item.Index)
+            .ThenBy(item => item.Entry.FamilySortId is { } family && firstIndexByFamily.TryGetValue(family, out var first) ? first : item.Index)
+            .ThenBy(item => item.Index)
+            .Select(item => item.Entry);
+    }
+
+    private IEnumerable<CatalogEntry> UsedCatalogEntries()
+    {
+        if (_document is null) return [];
+
+        var used = new HashSet<(bool IsEnemy, bool IsVariable, int Id)>(
+            _document.Elements
+                .Where(element => element.Kind is LevelElementKind.FixedGenerator or LevelElementKind.VariableGenerator)
+                .Select(element => (false, element.Kind == LevelElementKind.VariableGenerator, element.GeneratorId))
+                .Concat(_document.Enemies.Select(enemy => (true, false, (int)enemy.Id))));
+        return _catalog.Where(entry => used.Contains((entry.IsEnemy, entry.IsVariable, entry.Id)));
     }
 
     private void SaveGlobalEmulatorSettings()
@@ -1373,16 +1844,26 @@ public sealed partial class MainWindow : Window
 
     private List<CatalogEntry> BuildCatalog(int tileset)
     {
-        var items = ObjectCatalogNames.ForTileset(tileset)
-            .Select(item => new CatalogEntry(false, false, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})"))
-            .ToList();
-        items.AddRange(ObjectCatalogNames.VariableForTileset(tileset)
-            .Select(item => new CatalogEntry(false, true, item.Id, item.Name, $"{item.Name} (${item.Id:X2}, {item.Id})")));
-        items.AddRange(Smb3LevelRenderer.EnemyCatalog
+        // Keep variable generators together and first. This makes shared
+        // structures such as ceiling/wall pipes discoverable instead of
+        // burying them after the entire fixed-object catalog.
+        var items = ObjectCatalogNames.VariableForTileset(tileset)
+            .Select(item => CreateCatalogEntry(tileset, false, true, item.Id, item.Name));
+        var fixedItems = ObjectCatalogNames.ForTileset(tileset)
+            .Select(item => CreateCatalogEntry(tileset, false, false, item.Id, item.Name));
+        var allItems = items.Concat(fixedItems).ToList();
+        allItems.AddRange(Smb3LevelRenderer.EnemyCatalog
             .OrderBy(item => item.Value, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new CatalogEntry(true, false, item.Key, item.Value,
-                $"{item.Value} (${item.Key:X2}, {item.Key})")));
-        return items;
+            .Select(item => CreateCatalogEntry(tileset, true, false, item.Key, item.Value)));
+        return allItems;
+    }
+
+    private CatalogEntry CreateCatalogEntry(int tileset, bool isEnemy, bool isVariable, int id, string name)
+    {
+        var family = _catalogVariantFamilies.Find(tileset, isEnemy, isVariable, name);
+        return new CatalogEntry(isEnemy, isVariable, id, name, $"{name} (${id:X2}, {id})",
+            FamilyId: family?.Id, FamilySortId: family?.FamilySortId, NeighborhoodSortId: family?.NeighborhoodSortId,
+            FamilyName: family?.Name, SuppressPreview: family?.HidePreview ?? false);
     }
 
     private void QueueCatalogPreviews(IReadOnlyList<CatalogEntry> entries, int tileset)
@@ -1440,6 +1921,7 @@ public sealed partial class MainWindow : Window
 
     private static CatalogPreviewData? BuildCatalogPreview(CatalogEntry entry, int tileset, RomImage rom, LevelDocument document, IReadOnlyList<PaletteOverride>? paletteOverrides)
     {
+        if (entry.SuppressPreview) return null;
         try
         {
             var sample = document with
@@ -1451,8 +1933,19 @@ public sealed partial class MainWindow : Window
             var rendered = new Smb3LevelRenderer().Render(rom, sample, paletteOverrides: paletteOverrides);
             if (!rendered.IsSuccess) return null;
             var snapshot = rendered.Value!;
-            if (entry.IsEnemy && snapshot.EnemySprites.TryGetValue((byte)entry.Id, out var sprite))
-                return ToThumbnail(sprite.PixelWidth, sprite.PixelHeight, sprite.ArgbPixels);
+            if (entry.IsEnemy)
+            {
+                if (snapshot.EnemySprites.TryGetValue((byte)entry.Id, out var sprite))
+                    return ToThumbnail(sprite.PixelWidth, sprite.PixelHeight, sprite.ArgbPixels);
+                if (FoundryEnemyPreviewCatalog.TryGet(entry.Id, out var foundryPreview))
+                {
+                    var fallback = new Smb3LevelRenderer().RenderMetatilePreview(
+                        rom, document, foundryPreview.Blocks, foundryPreview.Width, foundryPreview.Height, paletteOverrides);
+                    if (fallback.IsSuccess)
+                        return ToThumbnail(fallback.Value!.PixelWidth, fallback.Value.PixelHeight, fallback.Value.ArgbPixels);
+                }
+                return null;
+            }
             if (!snapshot.ElementBounds.TryGetValue(0, out var bounds)) return null;
             var left = Math.Max(0, bounds.Left * 16);
             var top = Math.Max(0, bounds.Top * 16);
@@ -1523,9 +2016,36 @@ public sealed partial class MainWindow : Window
     private static bool PathsEqual(string left, string right) =>
         string.Equals(Path.GetFullPath(left), Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase);
 
-    private sealed record CatalogEntry(bool IsEnemy, bool IsVariable, int Id, string ShortName, string Display, CatalogPreviewData? Preview = null)
+    private sealed record CatalogEntry(
+        bool IsEnemy,
+        bool IsVariable,
+        int Id,
+        string ShortName,
+        string Display,
+        CatalogPreviewData? Preview = null,
+        string? FamilyId = null,
+        string? FamilySortId = null,
+        string? NeighborhoodSortId = null,
+        string? FamilyName = null,
+        bool SuppressPreview = false,
+        IReadOnlyList<CatalogEntry>? Variants = null)
     {
         public bool HasNoPreview => Preview is null;
+        public bool HasVariants => Variants is { Count: > 1 };
+        // Text is more useful than a family label when a family deliberately
+        // has no preview, such as the Z-event control entries.
+        public string CardTitle => HasNoPreview ? ShortName : FamilyName ?? ShortName;
+        public string CatalogDisplay => HasVariants ? $"{FamilyName} — {ShortName}" : Display;
+        public string CatalogToolTip => HasVariants
+            ? $"{CatalogDisplay}\nRight-click to choose from {Variants!.Count} variants"
+            : Display;
+        public string SearchText => HasVariants
+            ? string.Join(' ', Variants!.Select(item => $"{item.Display} {item.Id} ${item.Id:X2}"))
+            : Display;
+        public (bool IsEnemy, bool IsVariable, int Id) Identity => (IsEnemy, IsVariable, Id);
+
+        public CatalogEntry AsVariant() => Variants is null ? this : this with { Variants = null };
+        public bool SameIdentity(CatalogEntry other) => Identity == other.Identity;
         public string PreviewGlyph => IsEnemy ? "●" : "■";
         public override string ToString() => Display;
     }
@@ -1582,10 +2102,25 @@ public sealed partial class MainWindow : Window
         var slot = GetPaletteSlot(objects, index);
         if (slot is null) return new(index, index.ToString(), []);
         var colors = PalettePreview.FromNesColors(slot.Colors);
-        var state = slot.IsModified ? "Modified" : "Stock";
-        var label = string.IsNullOrWhiteSpace(slot.Name) ? $"{index + 1} - {state}" : $"{index + 1} - {slot.Name} ({state})";
+        var tileset = TilesetDisplayName(_document?.Tileset ?? 0);
+        var label = string.IsNullOrWhiteSpace(slot.Name)
+            ? $"{tileset} · {index + 1}"
+            : $"{tileset} · {index + 1} - {slot.Name}";
         return new PaletteChoice(index, label, colors);
     }
+
+    private static string TilesetDisplayName(int tileset) => tileset switch
+    {
+        1 => "Plains",
+        2 => "Fortress",
+        3 or 14 => "Hills",
+        4 or 12 => "High-Up",
+        5 or 11 or 13 => "Plant",
+        6 or 7 or 8 => "Pipe Maze",
+        9 => "Desert",
+        10 => "Airship",
+        _ => $"Tileset {tileset}"
+    };
 
     private static readonly NamedValue[] MusicChoices =
     [

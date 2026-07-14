@@ -1,0 +1,22 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Smb3Editor.App.PatchManagerWindow"
+        Title="Patches"
+        Width="720"
+        Height="520"
+        MinWidth="560"
+        MinHeight="360">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="18">
+    <StackPanel Spacing="4">
+      <TextBlock Text="Patches" FontSize="22" FontWeight="SemiBold" />
+      <TextBlock Text="Choose which verified patches belong to this project and their default state. Level overrides are set in the sidebar." TextWrapping="Wrap" Foreground="#AEBBCD" />
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" Margin="0,14,0,14">
+      <StackPanel x:Name="PatchList" Spacing="10" />
+    </ScrollViewer>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Cancel" Click="Cancel_Click" />
+      <Button Content="💾" Width="34" ToolTip.Tip="Save patches" Click="Save_Click" />
+    </StackPanel>
+  </Grid>
+</Window>

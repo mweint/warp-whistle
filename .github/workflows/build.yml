@@ -3,6 +3,13 @@ name: build
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   windows:
@@ -12,6 +19,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Check pinned ASM6f release
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $latest = (Invoke-RestMethod 'https://api.github.com/repos/freem/asm6f/releases/latest').tag_name
+          if ($latest -eq 'v1.6_f03') { exit 0 }
+          $title = "ASM6f update available: $latest"
+          $existing = gh issue list --state open --search "\"$title\" in:title" --json title --jq 'length'
+          if ($existing -eq '0') {
+            gh issue create --title $title --body "Pinned version: v1.6_f03`nOfficial release: https://github.com/freem/asm6f/releases/tag/$latest`n`nUpdate only after the ASM patch compatibility suite passes."
+          }
       - name: Restore
         run: dotnet restore Smb3Editor.slnx
       - name: Build
@@ -19,7 +39,7 @@ jobs:
       - name: Test
         run: dotnet run --project tests/Smb3Editor.Core.Tests -c Release --no-restore
       - name: Publish Windows x64
-        run: dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o artifacts/win-x64-warp-whistle
+        run: dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -p:EnableTraceTools=false -o artifacts/win-x64-warp-whistle
       - uses: actions/upload-artifact@v4
         with:
           name: Smb3Editor-win-x64

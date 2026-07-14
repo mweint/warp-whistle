@@ -7,6 +7,12 @@ artifacts/
 Mesen_2.2.1_Windows/
 references/
 externals/
+!externals/
+externals/*
+!externals/asm6f/
+!externals/asm6f/asm6f_64.exe
+!externals/asm6f/readme-original.txt
+!externals/asm6f/README-WarpWhistle.md
 Data/
 ROMs/
 Emulators/
@@ -15,6 +21,13 @@ Exports/
 WarpWhistle.exe
 WarpWhistle.pdb
 
+Directory.Build.user.props
+
+# Local-only Mesen trace/debug harnesses and logs.
+tools/*trace*.lua
+tools/retry-auto-test.lua
+tools/debug-addon.lua
+*.log
 *.user
 *.suo
 

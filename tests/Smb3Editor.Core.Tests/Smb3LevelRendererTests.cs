@@ -3,7 +3,7 @@ namespace Smb3Editor.Core.Tests;
 public sealed class Smb3LevelRendererTests
 {
     [Fact]
-    public void OptionalVerifiedPrg1RendersWorldOneOneFromRomData()
+    public void OptionalVerifiedRomRendersWorldOneOneFromRomData()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -59,7 +59,26 @@ public sealed class Smb3LevelRendererTests
     }
 
     [Fact]
-    public void OptionalVerifiedPrg1RendersEveryCatalogStageWithoutEscapingSandbox()
+    public void OptionalVerifiedRomRendersFoundryBlockPreviewFromRomData()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var decoded = Smb3LevelCodec.Decode(loaded.Value!, loaded.Value!.Profile.Levels["W1-1"]);
+        Assert.True(decoded.IsSuccess, string.Join(Environment.NewLine, decoded.Diagnostics));
+
+        var preview = new Smb3LevelRenderer().RenderMetatilePreview(loaded.Value!, decoded.Value!, [42, 43], 1, 2);
+
+        Assert.True(preview.IsSuccess, string.Join(Environment.NewLine, preview.Diagnostics));
+        Assert.Equal(16, preview.Value!.PixelWidth);
+        Assert.Equal(32, preview.Value.PixelHeight);
+        Assert.Contains(preview.Value.ArgbPixels, static pixel => (pixel >> 24) != 0);
+    }
+
+    [Fact]
+    public void OptionalVerifiedRomRendersEveryCatalogStageWithoutEscapingSandbox()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -92,7 +111,7 @@ public sealed class Smb3LevelRendererTests
     }
 
     [Fact]
-    public void OptionalVerifiedPrg1CatalogHasNamedPreviewForEveryStockEnemy()
+    public void OptionalVerifiedRomCatalogHasNamedPreviewForEveryStockEnemy()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;

@@ -21,19 +21,25 @@ public interface IDirectLevelTestBuilder
 public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
 {
     // PRG1 sites verified against the byte-perfect Southbird disassembly.
-    // The $E240 region is deliberate DMC alignment padding and is verified as
-    // all-$FF before it is used in a disposable test image.
+    // $E911 is the verified temporary fixed-bank area. When patches are
+    // enabled it contains the retry entry stub; Play Level owns this area
+    // only in its disposable test ROM, never in normal exports.
     private const int TitleEntryOffset = 0x3C4AD;
     private const int PrepareLevelCallOffset = 0x3C937;
     private const int RestartExitOffset = 0x3CF9E;
-    private const int HarnessOffset = 0x3E250;
-    // $E240 is a verified all-$FF DMC alignment pad in PRG1.  The entry stub
+    private const int AutoScrollCallOffset = 0x3CF3E;
+    private const int HarnessOffset = 0x3E921;
+    private const int TestAutoScrollWrapperOffset = 0x3DF20;
+    // The entry stub
     // reproduces the stock map-to-level transition immediately before $88C8;
     // entering $88C8 directly leaves the title-screen NMI handler active.
-    private const ushort EntryStubAddress = 0xE240;
-    private const ushort PrepareHarnessAddress = 0xE270;
+    private const ushort EntryStubAddress = 0xE911;
+    private const ushort PrepareHarnessAddress = 0xE932;
+    private const ushort TestAutoScrollWrapperAddress = 0x9F10;
+    private const ushort PatchRuntimeAddress = 0xE240;
+    private const ushort PatchRuntimeEnd = 0xE2BF;
     private const ushort LevelPreparationEntry = 0x88C8;
-    private const int HarnessCapacity = 128;
+    private const int HarnessCapacity = 111;
     private static readonly byte[] TitleEntryExpected = [0x20, 0xAF, 0xA8];
     private static readonly byte[] PrepareLevelExpected = [0x20, 0xFF, 0xB0];
     private static readonly byte[] RestartExitExpected = [0xAE, 0x26, 0x07];
@@ -49,7 +55,17 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
             return OperationResult<DirectLevelTestArtifact>.Failure(compiled.Diagnostics.ToArray());
         }
 
-        return Build(compiled.Value!, source, selectedLevel);
+        var directTest = Build(compiled.Value!, source, selectedLevel);
+        if (!directTest.IsSuccess || (!(project.Patches ?? PatchSettings.None).HasEnabledOptions(source.Profile.Levels.Keys) && (project.ExternalPatches?.Count ?? 0) == 0))
+        {
+            return directTest;
+        }
+
+        return OperationResult<DirectLevelTestArtifact>.Success(
+            directTest.Value!,
+            directTest.Diagnostics.Append(Diagnostics.Warning(
+                "PLAY_LEVEL_PATCH_SCOPE",
+                "Play Level uses its own disposable restart harness. Test executable patches with Play ROM.")));
     }
 
     public OperationResult<DirectLevelTestArtifact> Build(BuildArtifact compiledRom, RomImage source, LevelLocation selectedLevel)
@@ -69,15 +85,6 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
                 diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_TARGET", "The selected level is not a verified PRG1 catalog target.")).ToArray());
         }
 
-        if (!HasExpectedBytes(compiledRom.RomBytes, TitleEntryOffset, TitleEntryExpected) ||
-            !HasExpectedBytes(compiledRom.RomBytes, PrepareLevelCallOffset, PrepareLevelExpected) ||
-            !HasExpectedBytes(compiledRom.RomBytes, RestartExitOffset, RestartExitExpected) ||
-            !HasExpectedFill(compiledRom.RomBytes, HarnessOffset, HarnessCapacity, 0xFF))
-        {
-            return OperationResult<DirectLevelTestArtifact>.Failure(
-                diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_SIGNATURE", "The verified PRG1 test-harness sites do not match this compiled ROM; Play Level was not created.")).ToArray());
-        }
-
         if (!TryGetPointers(source, verifiedLevel, out var layoutPointer, out var enemyPointer, out var reason))
         {
             return OperationResult<DirectLevelTestArtifact>.Failure(
@@ -94,9 +101,30 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         }
 
         var output = compiledRom.RomBytes.ToArray();
+        byte[]? autoScrollWrapper = null;
+        if (HasJsrIntoRetryArea(output, AutoScrollCallOffset))
+        {
+            var target = (ushort)(output[AutoScrollCallOffset + 1] | (output[AutoScrollCallOffset + 2] << 8));
+            var sourceOffset = 0x3E010 + target - 0xE000;
+            autoScrollWrapper = output.AsSpan(sourceOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray();
+            if (!output.AsSpan(TestAutoScrollWrapperOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray().All(value => value == 0xFF))
+            {
+                return OperationResult<DirectLevelTestArtifact>.Failure(
+                    diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The disposable auto-scroll wrapper area is unavailable.")).ToArray());
+            }
+        }
+
+        // Play Level owns this complete temporary region. Remove any export-only
+        // retry/wrapper bytes before installing the disposable launch harness.
+        output.AsSpan(HarnessOffset, HarnessCapacity).Fill(0xFF);
         WriteJump(output, TitleEntryOffset, EntryStubAddress);
         WriteJsr(output, PrepareLevelCallOffset, PrepareHarnessAddress);
         WriteJump(output, RestartExitOffset, EntryStubAddress);
+        if (autoScrollWrapper is not null)
+        {
+            autoScrollWrapper.CopyTo(output, TestAutoScrollWrapperOffset);
+            WriteJsr(output, AutoScrollCallOffset, TestAutoScrollWrapperAddress);
+        }
         entryStub.CopyTo(output, HarnessOffset);
         prepareHarness.CopyTo(output, HarnessOffset + PrepareHarnessAddress - EntryStubAddress);
 
@@ -125,9 +153,9 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
 
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         if (!string.Equals(hash, artifact.Sha256, StringComparison.Ordinal) ||
-            !HasExpectedBytes(bytes, TitleEntryOffset, [0x4C, 0x40, 0xE2]) ||
-            !HasExpectedBytes(bytes, PrepareLevelCallOffset, [0x20, 0x70, 0xE2]) ||
-            !HasExpectedBytes(bytes, RestartExitOffset, [0x4C, 0x40, 0xE2]) ||
+            !HasExpectedBytes(bytes, TitleEntryOffset, [0x4C, 0x11, 0xE9]) ||
+            !HasExpectedBytes(bytes, PrepareLevelCallOffset, [0x20, 0x32, 0xE9]) ||
+            !HasExpectedBytes(bytes, RestartExitOffset, [0x4C, 0x11, 0xE9]) ||
             !HasExpectedBytes(bytes, HarnessOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
             !HasExpectedBytes(bytes, HarnessOffset + PrepareHarnessAddress - EntryStubAddress, [0xA9]) ||
             bytes[HarnessOffset + HarnessCapacity - 1] != 0xFF)
@@ -215,8 +243,49 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     private static bool HasExpectedBytes(ReadOnlySpan<byte> bytes, int offset, ReadOnlySpan<byte> expected) =>
         offset >= 0 && offset <= bytes.Length - expected.Length && bytes.Slice(offset, expected.Length).SequenceEqual(expected);
 
+    private static bool HasExpectedBytesAny(ReadOnlySpan<byte> bytes, int offset, params byte[][] expected)
+    {
+        foreach (var item in expected)
+        {
+            if (HasExpectedBytes(bytes, offset, item)) return true;
+        }
+        return false;
+    }
+
+    private static bool HasJsrIntoRetryArea(ReadOnlySpan<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x20) return false;
+        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
+        return target is >= 0xE911 and <= 0xE9AF;
+    }
+
+    private static bool HasJsrIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x20) return false;
+        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
+        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
+    }
+
+    private static bool HasJumpIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
+    {
+        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x4C) return false;
+        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
+        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
+    }
+
     private static bool HasExpectedFill(ReadOnlySpan<byte> bytes, int offset, int length, byte value) =>
         offset >= 0 && length >= 0 && offset <= bytes.Length - length && bytes.Slice(offset, length).ToArray().All(item => item == value);
+
+    private static bool HasSourceBytes(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source, int offset, int length) =>
+        offset >= 0 && length >= 0 && offset <= bytes.Length - length && offset <= source.Length - length &&
+        bytes.Slice(offset, length).SequenceEqual(source.Slice(offset, length));
+
+    private static bool HasExpectedHarness(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source) =>
+        HasExpectedFill(bytes, HarnessOffset, HarnessCapacity, 0xFF) ||
+        HasSourceBytes(bytes, source, HarnessOffset, HarnessCapacity) ||
+        HasExpectedBytes(bytes, HarnessOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
+        HasExpectedBytes(bytes, HarnessOffset, [0xEE, 0x55, 0x79, 0xA9, 0x28]) ||
+        HasExpectedBytes(bytes, HarnessOffset, [0xA2, 0xFF, 0x9A, 0xEE, 0x55]);
 
     private static void WriteJump(byte[] bytes, int offset, ushort target)
     {

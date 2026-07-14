@@ -63,7 +63,10 @@ public sealed record GeneratorDefinition(
         // for height and the fourth byte for width. Do not infer controls by
         // probing an outward resize: at the level bottom that probe fails,
         // while upward resizing remains valid.
-        if (document.Tileset == 1 && element.GeneratorId is >= 35 and <= 42)
+        // These long-run generators keep the same four-byte shape/width
+        // contract across the stock gameplay tilesets.  Their art changes
+        // with the tileset, but the editable command is shared.
+        if (element.GeneratorId is >= 35 and <= 42)
         {
             var names = new[]
             {
@@ -76,17 +79,44 @@ public sealed record GeneratorDefinition(
                 HorizontalSizeUsesExtraParameter: true);
         }
 
-        if (document.Tileset == 1 && element.GeneratorId is >= 23 and <= 25)
+        if (element.GeneratorId == 43)
+        {
+            return new("Ice Brick Run", GeneratorConstraint.HorizontalRun,
+                CanMoveX: true, CanMoveY: true, CanResizeRight: true, ParameterName: "Length");
+        }
+
+        // Pipe generators use the same IDs and edge constraints across the
+        // gameplay tilesets; they are not Plains-only objects.
+        if (element.GeneratorId is >= 23 and <= 25)
         {
             return new($"Vertical pipe ${element.GeneratorId:X2}", GeneratorConstraint.FloorAnchored,
                 CanMoveX: true, CanMoveY: true, CanResizeTop: true, ParameterName: "Height",
                 TopResizeChangesPosition: false, TopResizePreservesBottom: true);
         }
 
-        if (document.Tileset == 1 && element.GeneratorId is >= 26 and <= 27)
+        if (element.GeneratorId is >= 26 and <= 27)
         {
             return new($"Ceiling pipe ${element.GeneratorId:X2}", GeneratorConstraint.CeilingAnchored,
                 CanMoveX: true, CanMoveY: true, ParameterName: "Height", CanResizeBottom: true);
+        }
+
+        if (element.GeneratorId is >= 28 and <= 31)
+        {
+            var name = element.GeneratorId switch
+            {
+                28 => "Right-wall pipe to alternate area",
+                29 => "Right-wall pipe (no entrance)",
+                30 => "Left-wall pipe to alternate area",
+                _ => "Left-wall pipe (no entrance)"
+            };
+            // The disassembly shows a 1-16 horizontal run in the low shape
+            // nibble. Right-wall pipes grow toward the left; left-wall pipes
+            // grow toward the right.
+            return element.GeneratorId is 28 or 29
+                ? new(name, GeneratorConstraint.HorizontalRun, CanMoveX: true, CanMoveY: true,
+                    CanResizeLeft: true, ParameterName: "Length")
+                : new(name, GeneratorConstraint.HorizontalRun, CanMoveX: true, CanMoveY: true,
+                    CanResizeRight: true, ParameterName: "Length");
         }
 
         if (document.Tileset == 2 && element.GeneratorId == 13)
@@ -123,8 +153,7 @@ public static class GeneratorDefaults
         // Values below three create the wrapped, giant form.
         1 when generatorId is >= 4 and <= 7 => 3,
         // These generators decrement with BNE, so zero would wrap to 256.
-        1 when generatorId is 9 or 13 or 14 or 26 or 27 or 30 or 31 or 42 or 44 => 1,
-        2 when generatorId is 26 or 27 or 30 or 31 or 44 => 1,
+        _ when generatorId is 9 or 13 or 14 or 26 or 27 or 30 or 31 or 42 or 43 or 44 => 1,
         _ => 0
     };
 

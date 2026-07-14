@@ -27,8 +27,8 @@ public sealed class DirectLevelTestBuilderTests
         Assert.Equal((byte)0x4C, direct.Value.RomBytes[0x3C4AD]);
         Assert.Equal((byte)0x20, direct.Value.RomBytes[0x3C937]);
         Assert.Equal((byte)0x4C, direct.Value.RomBytes[0x3CF9E]);
-        Assert.Equal((byte)0x40, direct.Value.RomBytes[0x3CF9F]);
-        Assert.Equal((byte)0xE2, direct.Value.RomBytes[0x3CFA0]);
+        Assert.Equal((byte)0x11, direct.Value.RomBytes[0x3CF9F]);
+        Assert.Equal((byte)0xE9, direct.Value.RomBytes[0x3CFA0]);
     }
 
     [Fact]
@@ -50,6 +50,31 @@ public sealed class DirectLevelTestBuilderTests
         altered[0x3E250] ^= 0x01;
 
         Assert.False(builder.VerifyReadback(direct.Value, altered).IsSuccess);
+    }
+
+    [Fact]
+    public void DirectLevelBuildAcceptsEnabledPatchRuntimeHooks()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var source = RomImage.Load(path);
+        Assert.True(source.IsSuccess, string.Join(Environment.NewLine, source.Diagnostics));
+        if (source.Value!.Profile.Id != "us-prg1") return;
+
+        var project = ProjectDocumentV2.Create(source.Value) with
+        {
+            Patches = new PatchSettings(
+                ContinuousAutoScroll: new PatchSetting(
+                    LevelOverrides: new Dictionary<string, bool> { ["W1-4"] = true }))
+        };
+        var compiled = new RomCompiler().Compile(project, source.Value);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+
+        var direct = new DirectLevelTestBuilder().Build(compiled.Value!, source.Value, source.Value.Profile.Levels["W1-4"]);
+        Assert.True(direct.IsSuccess, string.Join(Environment.NewLine, direct.Diagnostics));
+        Assert.Equal(new byte[] { 0x20, 0x10, 0x9F }, direct.Value!.RomBytes.Skip(0x3CF3E).Take(3).ToArray());
+        Assert.Equal(new byte[] { 0xAD, 0x80, 0x05 }, direct.Value.RomBytes.Skip(0x3DF20).Take(3).ToArray());
     }
 
     [Fact]

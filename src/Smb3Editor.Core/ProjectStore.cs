@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Smb3Editor.Core;
@@ -37,6 +38,13 @@ public static class ProjectStore
         try
         {
             var bytes = File.ReadAllBytes(path);
+            var root = JsonNode.Parse(bytes)?.AsObject();
+            if (root is not null && root["patches"] is null && root["addOns"] is JsonNode legacyPatches)
+            {
+                root["patches"] = legacyPatches.DeepClone();
+                root.Remove("addOns");
+                bytes = JsonSerializer.SerializeToUtf8Bytes(root, Options);
+            }
             var project = JsonSerializer.Deserialize<ProjectDocumentV2>(bytes, Options);
             if (project is null)
             {
@@ -52,6 +60,18 @@ public static class ProjectStore
             if (project.FormatVersion == 2)
             {
                 project = MigrateV2(project, diagnostics);
+            }
+            if (project.FormatVersion == 3)
+            {
+                project = MigrateV3(project, diagnostics);
+            }
+            if (project.FormatVersion == 4)
+            {
+                project = MigrateV4(project, diagnostics);
+            }
+            if (project.FormatVersion == 5)
+            {
+                project = MigrateV5(project, diagnostics);
             }
             if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
@@ -156,5 +176,28 @@ public static class ProjectStore
     {
         diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 2 to format 3 with project-only palette names."));
         return legacy with { FormatVersion = 3, PaletteSlotLabels = [] };
+    }
+
+    private static ProjectDocumentV2 MigrateV3(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 3 to format 4 with opt-in patch settings."));
+        return legacy with { FormatVersion = 4, Patches = PatchSettings.None };
+    }
+
+    private static ProjectDocumentV2 MigrateV4(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 4 to format 5 with patch controls."));
+        return legacy with { FormatVersion = 5, Patches = legacy.Patches ?? PatchSettings.None };
+    }
+
+    private static ProjectDocumentV2 MigrateV5(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 5 to format 6 with explicit vanilla/enhanced output modes."));
+        return legacy with
+        {
+            FormatVersion = ProjectDocumentV2.CurrentFormatVersion,
+            OutputMode = RomOutputMode.Vanilla,
+            StorageMode = RomStorageMode.FixedSlots
+        };
     }
 }

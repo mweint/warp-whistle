@@ -28,7 +28,11 @@ public sealed class EmulatorLauncher : IEmulatorLauncher
             var startInfo = new ProcessStartInfo
             {
                 FileName = configuration.ExecutablePath,
-                UseShellExecute = false,
+                // GUI emulators such as MesenCE can enter their console/test-runner
+                // path when started directly. Let Windows launch the executable so
+                // normal Play ROM/Level actions always create a visible window.
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Normal,
                 WorkingDirectory = Path.GetDirectoryName(configuration.ExecutablePath) ?? Environment.CurrentDirectory
             };
 
@@ -55,5 +59,5 @@ public sealed class EmulatorLauncher : IEmulatorLauncher
             return OperationResult<int>.Failure(Diagnostics.Error("EMULATOR_START", $"The emulator could not be started: {ex.Message}"));
         }
     }
-}
 
+}

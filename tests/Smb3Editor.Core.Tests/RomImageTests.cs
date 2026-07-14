@@ -3,6 +3,46 @@ namespace Smb3Editor.Core.Tests;
 public sealed class RomImageTests
 {
     [Fact]
+    public void VerifiedPrg0Nes20HeaderFingerprintMapsToPrg0Profile()
+    {
+        var profile = Smb3Profiles.FindBySha1("5f9019040fe23cb412a484e1ef430e59e589f9b4");
+
+        Assert.NotNull(profile);
+        Assert.Equal("us-prg0", profile.Id);
+    }
+
+    [Fact]
+    public void OptionalVerifiedPrg0Nes20RomLoadsRendersAndCompilesAsPrg0()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_PRG0_NES20_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        var result = RomImage.Load(path);
+
+        Assert.True(result.IsSuccess, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal("us-prg0", result.Value!.Profile.Id);
+        Assert.Equal("5f9019040fe23cb412a484e1ef430e59e589f9b4", result.Value.Sha1);
+        Assert.Equal(80, result.Value.Profile.Levels.Count);
+
+        var location = result.Value.Profile.Levels["W1-1"];
+        var decoded = Smb3LevelCodec.Decode(result.Value, location);
+        Assert.True(decoded.IsSuccess, string.Join(Environment.NewLine, decoded.Diagnostics));
+        var document = decoded.Value!;
+        var element = document.Elements.First(static item => item.Kind != LevelElementKind.Junction);
+        var moved = document.MoveElement(element.Index, element.X + 1, element.Y);
+        var rendered = new Smb3LevelRenderer().Render(result.Value, moved);
+        Assert.True(rendered.IsSuccess, string.Join(Environment.NewLine, rendered.Diagnostics));
+
+        var compiled = new RomCompiler().Compile(ProjectDocumentV2.Create(result.Value).WithArea(moved), result.Value);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+        Assert.Equal(result.Value.Bytes.Length, compiled.Value!.RomBytes.Length);
+        Assert.Equal(result.Value.Bytes[..16], compiled.Value.RomBytes[..16]);
+    }
+
+    [Fact]
     public void TruncatedInputReturnsDiagnostic()
     {
         WithTemporaryFile([0x4E, 0x45], path =>
@@ -150,13 +190,11 @@ public sealed class RomImageTests
             return;
         }
 
-        var bytes = File.ReadAllBytes(path);
-        var declaredLength = 16 + (bytes[4] * 16_384) + (bytes[5] * 8_192);
-        var normalized = bytes[..declaredLength];
-        var catalog = RomCatalogBuilder.Build(normalized);
-        Assert.True(catalog.IsSuccess);
-        var profile = Smb3Profiles.FindById("us-prg1")! with { Levels = catalog.Value! };
-        var source = RomImage.CreateForTesting(path, normalized, profile);
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var source = loaded.Value!;
+        var normalized = source.Bytes;
+        var profile = source.Profile;
         var working = normalized.ToArray();
         var mutationImage = RomImage.CreateForTesting(path, working, profile);
         var renderer = new Smb3LevelRenderer();
@@ -252,7 +290,7 @@ public sealed class RomImageTests
     }
 
     [Fact]
-    public void OptionalVerifiedPrg1VerticalPipeMazeUsesFullEnemyScreenCoordinates()
+    public void OptionalVerifiedRomVerticalPipeMazeUsesFullEnemyScreenCoordinates()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
@@ -304,6 +342,16 @@ public sealed class RomImageTests
 
         var rendered = new Smb3LevelRenderer().Render(rom, moved);
         Assert.True(rendered.IsSuccess, string.Join(Environment.NewLine, rendered.Diagnostics));
+    }
+
+    [Fact]
+    public void HillsCatalogFourByteGeneratorIsEncodedAsFourBytes()
+    {
+        var profile = Smb3Profiles.FindById("us-prg1")!;
+        var hills = profile.Levels["W1-2"];
+
+        Assert.Equal(3, hills.Tileset);
+        Assert.Contains(80, hills.FourByteGeneratorIds);
     }
 
     private static void WithTemporaryFile(byte[] bytes, Action<string> test)

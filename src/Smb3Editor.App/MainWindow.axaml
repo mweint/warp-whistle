@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="using:Smb3Editor.App"
         x:Class="Smb3Editor.App.MainWindow"
+        x:Name="MainWindowRoot"
         Title="Warp Whistle"
         Width="1440"
         Height="900"
@@ -23,12 +24,14 @@
   </Window.Styles>
   <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
     <Border Grid.Row="0" Background="#172231" Padding="6,2">
+      <StackPanel Orientation="Horizontal" Spacing="4">
       <Menu>
         <MenuItem Header="File">
           <MenuItem Header="Open ROM" Click="OpenRom_Click" />
           <MenuItem Header="Open Project" Click="OpenProject_Click" />
           <MenuItem Header="Save Project" Click="SaveProject_Click" />
           <MenuItem Header="Open Workspace Folder" Click="OpenWorkspace_Click" />
+          <MenuItem x:Name="OpenTraceLogsMenuItem" Header="Open Trace Logs" Click="OpenTraceLogs_Click" />
           <MenuItem Header="Open Legacy Preview Cache" Click="OpenLegacyPreviewCache_Click" />
           <Separator />
           <MenuItem Header="Export ROM" Click="ExportRom_Click" />
@@ -43,6 +46,8 @@
           <MenuItem Header="Delete" Click="Delete_Click" />
         </MenuItem>
       </Menu>
+      <Button Content="Patches" Click="OpenPatchManager_Click" Padding="10,3" VerticalAlignment="Center" />
+      </StackPanel>
     </Border>
 
     <Border Grid.Row="1" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,0,0,1" Padding="10,7">
@@ -56,9 +61,12 @@
             </MenuFlyout>
           </SplitButton.Flyout>
         </SplitButton>
+        <ToggleButton x:Name="TracePlayLevelToggle" Content="Trace" ToolTip.Tip="Launch the selected play mode with its bundled Mesen trace" />
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
         <Button Content="Clear level" Click="ClearLevel_Click" />
-        <Button x:Name="SaveButton" Content="Save" Click="SaveProject_Click" />
+        <Button x:Name="UndoButton" Content="↶" Width="32" Click="Undo_Click" ToolTip.Tip="Undo (Ctrl+Z)" />
+        <Button x:Name="RedoButton" Content="↷" Width="32" Click="Redo_Click" ToolTip.Tip="Redo (Ctrl+Y)" />
+        <Button x:Name="SaveButton" Content="💾" Width="34" Click="SaveProject_Click" ToolTip.Tip="Save project (Ctrl+S)" />
         <TextBlock x:Name="SaveStateText" Text="Saved" VerticalAlignment="Center" Foreground="#8FA0B5" FontSize="12" />
         <TextBlock Text="Ctrl + wheel: zoom" VerticalAlignment="Center" Foreground="#718399" Margin="8,0,0,0" />
         <!-- This fixed slot keeps feedback in the app chrome without moving the canvas. -->
@@ -104,11 +112,11 @@
               <NumericUpDown x:Name="ScreenCountBox" Minimum="1" Maximum="16" Increment="1" Margin="0,3,0,10" ValueChanged="HeaderValueChanged" />
               <TextBlock Text="Background palette" />
               <ComboBox x:Name="BackgroundPaletteBox" Margin="0,3,0,10" SelectionChanged="HeaderSelectionChanged">
-                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
+                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="{Binding Name}"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
               </ComboBox>
               <TextBlock Text="Object palette" />
               <ComboBox x:Name="ObjectPaletteBox" Margin="0,3,0,10" SelectionChanged="HeaderSelectionChanged">
-                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="8"><TextBlock Text="{Binding Name}" Width="18"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
+                <ComboBox.ItemTemplate><DataTemplate><StackPanel Orientation="Horizontal" Spacing="6"><TextBlock Text="{Binding Name}"/><local:PalettePreview Colors="{Binding Colors}"/></StackPanel></DataTemplate></ComboBox.ItemTemplate>
               </ComboBox>
               <StackPanel IsVisible="False">
               <TextBlock Text="Palette editor" TextWrapping="Wrap" />
@@ -140,39 +148,57 @@
           <TabItem Header="Items">
             <Border Background="#111923" Padding="2">
               <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="6">
-                <TextBox x:Name="CatalogSearchBox" PlaceholderText="Search objects and enemies" TextChanged="CatalogFilterChanged" />
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="3">
-                  <ToggleButton x:Name="CatalogAllFilter" Tag="0" Content="All" IsChecked="True" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogObjectsFilter" Tag="1" Content="Objects" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogEnemiesFilter" Tag="2" Content="Enemies" Padding="7,2" Click="CatalogFilterTab_Click" />
-                  <ToggleButton x:Name="CatalogRecentFilter" Tag="3" Content="Recent" Padding="7,2" Click="CatalogFilterTab_Click" />
-                </StackPanel>
-                <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8">
-                  <ToggleButton x:Name="CatalogGridToggle" Content="Grid" IsChecked="True" Click="CatalogViewChanged" />
-                  <ToggleButton x:Name="CatalogListToggle" Content="List" Click="CatalogViewChanged" />
-                  <TextBlock Text="Tile size" VerticalAlignment="Center" Margin="8,0,0,0" />
-                  <Slider x:Name="CatalogTileSizeSlider" Minimum="52" Maximum="112" Value="72" Width="82" />
-                </StackPanel>
+                <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+                    <ComboBox x:Name="CatalogScopeBox" SelectedIndex="0" SelectionChanged="CatalogScopeChanged">
+                      <ComboBoxItem Content="All items" />
+                      <ComboBoxItem Content="Objects" />
+                      <ComboBoxItem Content="Sprites" />
+                      <ComboBoxItem Content="Recent" />
+                      <ComboBoxItem Content="Used in level" />
+                    </ComboBox>
+                    <ComboBox x:Name="CatalogViewBox" Grid.Column="1" Width="72" SelectedIndex="0" SelectionChanged="CatalogViewChanged">
+                      <ComboBoxItem Content="Grid" />
+                      <ComboBoxItem Content="List" />
+                    </ComboBox>
+                    <ToggleButton x:Name="CatalogGroupVariantsToggle" Grid.Column="2" Content="Grouped" IsChecked="True" Click="GroupCatalogVariants_Click" />
+                </Grid>
+                <TextBox Grid.Row="1" x:Name="CatalogSearchBox" PlaceholderText="Search this collection" TextChanged="CatalogFilterChanged" />
+                <Grid x:Name="CatalogTileSizeControls" Grid.Row="2" ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                  <TextBlock Text="Tile size" VerticalAlignment="Center" />
+                  <Slider x:Name="CatalogTileSizeSlider" Grid.Column="1" Minimum="2" Maximum="7" Value="5" TickFrequency="1" IsSnapToTickEnabled="True" ValueChanged="CatalogTileSizeChanged" />
+                </Grid>
                 <ScrollViewer Grid.Row="3">
                   <Grid>
-                    <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged">
+                    <ListBox x:Name="CatalogGrid" SelectionChanged="CatalogSelectionChanged" SizeChanged="CatalogGridSizeChanged" Padding="0">
                       <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
                       <ListBox.Styles>
                         <Style Selector="ListBoxItem"><Setter Property="Padding" Value="2" /><Setter Property="Margin" Value="0" /><Setter Property="MinWidth" Value="0" /><Setter Property="BorderThickness" Value="0" /><Setter Property="Background" Value="Transparent" /></Style>
                         <Style Selector="ListBoxItem:selected"><Setter Property="Background" Value="#3478A5" /></Style>
                       </ListBox.Styles>
                       <ListBox.ItemTemplate><DataTemplate>
-                        <Border Classes="catalog-tile" Width="{Binding Value, ElementName=CatalogTileSizeSlider}" Height="{Binding Value, ElementName=CatalogTileSizeSlider}" Margin="0" Padding="0" Background="#182534" BorderBrush="#3A506B" BorderThickness="1" ToolTip.Tip="{Binding Display}">
+                        <Border Classes="catalog-tile" Width="{Binding CatalogTileSize, ElementName=MainWindowRoot}" Height="{Binding CatalogTileSize, ElementName=MainWindowRoot}" Margin="0" Padding="0" Background="#171A1F" BorderBrush="#30353D" BorderThickness="1" ToolTip.Tip="{Binding CatalogToolTip}" PointerPressed="CatalogItemPointerPressed">
                           <Grid>
                             <local:CatalogPreview Preview="{Binding Preview}" />
-                            <TextBlock Text="{Binding ShortName}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                            <TextBlock Text="{Binding CardTitle}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="4" FontSize="11" />
+                            <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 14,0 L 14,14 Z" Fill="Black" Width="14" Height="14" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 10,0 L 10,10 Z" Fill="#FF3856" Width="10" Height="10" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
                           </Grid>
                         </Border>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
                     <ListBox x:Name="CatalogListView" IsVisible="False" SelectionChanged="CatalogSelectionChanged">
                       <ListBox.ItemTemplate><DataTemplate>
-                        <StackPanel Orientation="Horizontal" Spacing="10" Margin="4"><TextBlock Text="{Binding PreviewGlyph}" Width="28" FontSize="20" Foreground="#9FD9FF"/><TextBlock Text="{Binding Display}" TextWrapping="Wrap" /></StackPanel>
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="4" PointerPressed="CatalogItemPointerPressed" ToolTip.Tip="{Binding CatalogToolTip}">
+                          <Border Width="44" Height="44" Background="#171A1F" BorderBrush="#30353D" BorderThickness="1">
+                            <Grid>
+                              <local:CatalogPreview Preview="{Binding Preview}" />
+                              <TextBlock Text="{Binding CardTitle}" IsVisible="{Binding HasNoPreview}" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" Margin="3" FontSize="10" />
+                              <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 12,0 L 12,12 Z" Fill="Black" Width="12" Height="12" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                              <Path IsVisible="{Binding HasVariants}" IsHitTestVisible="False" Data="M 0,0 L 8,0 L 8,8 Z" Fill="#FF3856" Width="8" Height="8" Stretch="Fill" HorizontalAlignment="Right" VerticalAlignment="Top" />
+                            </Grid>
+                          </Border>
+                          <TextBlock Grid.Column="1" Text="{Binding CatalogDisplay}" TextWrapping="Wrap" VerticalAlignment="Center" />
+                        </Grid>
                       </DataTemplate></ListBox.ItemTemplate>
                     </ListBox>
                   </Grid>
@@ -180,11 +206,30 @@
               </Grid>
             </Border>
           </TabItem>
+          <TabItem Header="Patches">
+            <Border Background="#111923" Padding="16">
+              <ScrollViewer>
+                <StackPanel Spacing="10">
+                  <TextBlock Classes="section" Text="Enhanced patches" />
+                  <TextBlock Text="Optional PRG1 changes for compatible MMC3 flash carts and repro boards. Vanilla exports remain unchanged until enabled." TextWrapping="Wrap" />
+                  <StackPanel x:Name="PatchControls" Spacing="14">
+                    <TextBlock x:Name="NoPatchesText" Text="No patches are included. Use the top-bar Patches button to add one." TextWrapping="Wrap" Foreground="#9FB0C4" />
+                    <TextBlock x:Name="PatchLevelText" Text="Level overrides" Foreground="#9FB0C4" />
+                    <StackPanel x:Name="PatchOverrideList" Spacing="10" />
+                  </StackPanel>
+                </StackPanel>
+              </ScrollViewer>
+            </Border>
+          </TabItem>
         </TabControl>
       </SplitView.Pane>
 
       <Border Background="#0D141D">
-        <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer x:Name="LevelScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <ScrollViewer.Styles>
+            <Style Selector="ScrollBar[Orientation=Vertical]"><Setter Property="Width" Value="10" /></Style>
+            <Style Selector="ScrollBar[Orientation=Horizontal]"><Setter Property="Height" Value="10" /></Style>
+          </ScrollViewer.Styles>
           <local:LevelCanvas x:Name="EditorCanvas" />
         </ScrollViewer>
       </Border>

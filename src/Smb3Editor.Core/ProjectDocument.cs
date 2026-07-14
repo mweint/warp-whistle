@@ -18,15 +18,88 @@ public sealed record EditorState(
 public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
 public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, string Name);
 
+public enum RomOutputMode
+{
+    Vanilla,
+    EnhancedMmc3
+}
+
+public enum RomStorageMode
+{
+    FixedSlots,
+    ExpandedBanks
+}
+
+/// <summary>One opt-in patch with a project default and explicit level overrides.</summary>
+public sealed record PatchSetting(
+    bool EnabledByDefault = false,
+    IReadOnlyDictionary<string, bool>? LevelOverrides = null)
+{
+    public bool IsEnabledFor(string areaId) =>
+        LevelOverrides is not null && LevelOverrides.TryGetValue(areaId, out var enabled)
+            ? enabled
+            : EnabledByDefault;
+}
+
+/// <summary>
+/// Enhanced, hardware-compatible patches. These are deliberately separate
+/// from vanilla level data and are applied only by the PRG1 patch compiler.
+/// </summary>
+public sealed record PatchSettings(
+    PatchSetting? QuickRetry = null,
+    PatchSetting? StartSelectReturnToMap = null,
+    PatchSetting? ContinuousAutoScroll = null,
+    IReadOnlyDictionary<string, PatchSetting>? Additional = null)
+{
+    // Null settings mean no executable patches are included in a new project.
+    // A setting is created only when the designer explicitly adds a patch in
+    // the Patches manager; this keeps vanilla projects byte-identical.
+    public static PatchSettings None { get; } = new();
+
+    public PatchSetting? Get(string id) => id switch
+    {
+        "quick-retry" => QuickRetry,
+        "start-select-map" => StartSelectReturnToMap,
+        "continuous-auto-scroll" => ContinuousAutoScroll,
+        _ => Additional is not null && Additional.TryGetValue(id, out var setting) ? setting : null
+    };
+
+    public PatchSettings With(string id, PatchSetting? setting)
+    {
+        if (id == "quick-retry") return this with { QuickRetry = setting };
+        if (id == "start-select-map") return this with { StartSelectReturnToMap = setting };
+        if (id == "continuous-auto-scroll") return this with { ContinuousAutoScroll = setting };
+        var additional = new Dictionary<string, PatchSetting>(Additional ?? new Dictionary<string, PatchSetting>(), StringComparer.Ordinal);
+        if (setting is null) additional.Remove(id); else additional[id] = setting;
+        return this with { Additional = additional };
+    }
+
+    public IEnumerable<KeyValuePair<string, PatchSetting>> Enumerate()
+    {
+        if (QuickRetry is not null) yield return new("quick-retry", QuickRetry);
+        if (StartSelectReturnToMap is not null) yield return new("start-select-map", StartSelectReturnToMap);
+        if (ContinuousAutoScroll is not null) yield return new("continuous-auto-scroll", ContinuousAutoScroll);
+        if (Additional is not null)
+            foreach (var pair in Additional) yield return pair;
+    }
+
+    public bool HasEnabledOptions(IEnumerable<string> areaIds) =>
+        Enumerate().Any(pair => pair.Value.EnabledByDefault || areaIds.Any(pair.Value.IsEnabledFor));
+}
+
 public sealed record ProjectDocumentV2(
     int FormatVersion,
     ProjectSource Source,
     IReadOnlyDictionary<string, LevelDocument> ModifiedAreas,
     EditorState EditorState,
     IReadOnlyList<PaletteOverride>? PaletteOverrides = null,
-    IReadOnlyList<PaletteSlotLabel>? PaletteSlotLabels = null)
+    IReadOnlyList<PaletteSlotLabel>? PaletteSlotLabels = null,
+    PatchSettings? Patches = null,
+    RomOutputMode OutputMode = RomOutputMode.Vanilla,
+    RomStorageMode StorageMode = RomStorageMode.FixedSlots,
+    IReadOnlyList<string>? ExternalPatches = null)
 {
-    public const int CurrentFormatVersion = 3;
+    public const int CurrentFormatVersion = 6;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
@@ -34,6 +107,10 @@ public sealed record ProjectDocumentV2(
         new Dictionary<string, LevelDocument>(StringComparer.Ordinal),
         new EditorState(),
         [],
+        [],
+        PatchSettings.None,
+        RomOutputMode.Vanilla,
+        RomStorageMode.FixedSlots,
         []);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)
