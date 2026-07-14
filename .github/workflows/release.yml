@@ -24,7 +24,7 @@ jobs:
         run: >
           dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:DebugType=None -p:DebugSymbols=false -o artifacts/release
+          -p:DebugType=None -p:DebugSymbols=false -p:EnableTraceTools=false -o artifacts/release
       - name: Build portable ZIP
         shell: pwsh
         run: >

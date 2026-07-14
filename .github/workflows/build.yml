@@ -35,7 +35,7 @@ jobs:
       - name: Restore
         run: dotnet restore Smb3Editor.slnx
       - name: Build
-        run: dotnet build Smb3Editor.slnx -c Release --no-restore
+        run: dotnet build Smb3Editor.slnx -c Release --no-restore -p:EnableTraceTools=false
       - name: Test
         run: dotnet run --project tests/Smb3Editor.Core.Tests -c Release --no-restore
       - name: Publish Windows x64
