@@ -14,6 +14,10 @@ public sealed class Asm6fAssembler
 
     private static string FindBundledAssembler()
     {
+        var packagedTool = Path.Combine(AppContext.BaseDirectory, "Tools", "asm6f", "asm6f_64.exe");
+        if (File.Exists(packagedTool)) return packagedTool;
+
+        // Compatibility for previously extracted portable builds.
         var besideApplication = Path.Combine(AppContext.BaseDirectory, "asm6f_64.exe");
         if (File.Exists(besideApplication)) return besideApplication;
 
@@ -142,6 +146,8 @@ public static class PatchCatalog
         {
             for (var directory = new DirectoryInfo(root); directory is not null; directory = directory.Parent)
             {
+                var packagedCandidate = Path.Combine(directory.FullName, "Resources", "patches");
+                if (Directory.Exists(packagedCandidate)) return packagedCandidate;
                 var candidate = Path.Combine(directory.FullName, "patches");
                 if (Directory.Exists(candidate)) return candidate;
             }
