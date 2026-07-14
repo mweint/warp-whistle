@@ -10,7 +10,17 @@ public sealed class Asm6fAssembler
     private readonly string _executablePath;
 
     public Asm6fAssembler(string? executablePath = null) =>
-        _executablePath = executablePath ?? Path.Combine(AppContext.BaseDirectory, "asm6f_64.exe");
+        _executablePath = executablePath ?? FindBundledAssembler();
+
+    private static string FindBundledAssembler()
+    {
+        var besideApplication = Path.Combine(AppContext.BaseDirectory, "asm6f_64.exe");
+        if (File.Exists(besideApplication)) return besideApplication;
+
+        // Source-checkout fallback. Portable releases receive a sibling copy
+        // from the package builder, so this path never changes release layout.
+        return Path.Combine(AppContext.BaseDirectory, "tools", "asm6f", "asm6f_64.exe");
+    }
 
     public OperationResult<byte[]> Assemble(string sourcePath)
     {

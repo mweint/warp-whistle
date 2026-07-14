@@ -127,7 +127,7 @@ public sealed partial class MainWindow : Window
         if (!string.IsNullOrWhiteSpace(configuredEmulator) && !string.Equals(configuredEmulator, _appSettings.EmulatorPath, StringComparison.OrdinalIgnoreCase))
         {
             _appSettings = _appSettings with { EmulatorPath = configuredEmulator };
-            AddDiagnostics([Diagnostics.Info("EMULATOR_EXTERNAL_FOUND", "Using Mesen from externals/emulators.")]);
+            AddDiagnostics([Diagnostics.Info("EMULATOR_EXTERNAL_FOUND", "Using Mesen from the Emulators workspace folder.")]);
             AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
         }
         EmulatorPathBox.Text = configuredEmulator;
@@ -171,8 +171,7 @@ public sealed partial class MainWindow : Window
     {
         var directories = new[]
         {
-            WorkspacePaths.RomsDirectory,
-            Path.Combine(AppContext.BaseDirectory, "externals", "roms")
+            WorkspacePaths.RomsDirectory
         };
         foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -198,8 +197,7 @@ public sealed partial class MainWindow : Window
     {
         var directories = new[]
         {
-            WorkspacePaths.EmulatorsDirectory,
-            Path.Combine(AppContext.BaseDirectory, "externals", "emulators")
+            WorkspacePaths.EmulatorsDirectory
         };
         foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
         {

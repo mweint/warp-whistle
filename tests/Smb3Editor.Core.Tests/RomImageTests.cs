@@ -182,6 +182,32 @@ public sealed class RomImageTests
     }
 
     [Fact]
+    public void OptionalUserSuppliedPrg1RomParsesAllOverworldMaps()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        if (loaded.Value!.Profile.Id != "us-prg1")
+        {
+            return;
+        }
+
+        var parsed = Smb3OverworldParser.Parse(loaded.Value);
+        Assert.True(parsed.IsSuccess, string.Join(Environment.NewLine, parsed.Diagnostics));
+        Assert.Equal(9, parsed.Value!.Count);
+        Assert.All(parsed.Value, map =>
+        {
+            Assert.InRange(map.ScreenCount, 1, 4);
+            Assert.All(map.LevelPointers, pointer => Assert.InRange(pointer.Row, 2, 10));
+        });
+    }
+
+    [Fact]
     public void OptionalUserSuppliedRomMutationSweepsEveryMovablePackedCoordinate()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");

@@ -11,8 +11,8 @@
     <DefineConstants Condition="'$(EnableTraceTools)' == 'true'">$(DefineConstants);WARPWHISTLE_TRACE</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="../../externals/asm6f/asm6f_64.exe" Link="asm6f_64.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
-    <Content Include="../../externals/asm6f/readme-original.txt" Link="THIRD-PARTY-ASM6F-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="../../tools/asm6f/asm6f_64.exe" Link="asm6f_64.exe" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
+    <Content Include="../../tools/asm6f/readme-original.txt" Link="THIRD-PARTY-ASM6F-LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <Content Include="../../patches/**" Link="patches/%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <Content Include="../../items.json" Link="items.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     <Content Include="../../tools/retry-trace.lua" Link="trace-retry.lua" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" Condition="'$(EnableTraceTools)' == 'true'" />
