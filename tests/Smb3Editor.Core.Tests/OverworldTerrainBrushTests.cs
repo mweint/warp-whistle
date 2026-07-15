@@ -35,11 +35,11 @@ public sealed class OverworldTerrainBrushTests
     {
         Assert.Equal(OverworldTerrainBrush.SouthEastCornerTile,
             OverworldTerrainBrush.ApplyPathStroke(CreateWorld(), [(1, 4), (2, 4), (2, 3)]).TileAt(2, 4));
-        Assert.Equal(OverworldTerrainBrush.SouthWestCornerTile,
+        Assert.Equal(OverworldTerrainBrush.NorthWestCornerTile,
             OverworldTerrainBrush.ApplyPathStroke(CreateWorld(), [(2, 4), (2, 3), (3, 3)]).TileAt(2, 3));
         Assert.Equal(OverworldTerrainBrush.NorthEastCornerTile,
             OverworldTerrainBrush.ApplyPathStroke(CreateWorld(), [(1, 3), (2, 3), (2, 4)]).TileAt(2, 3));
-        Assert.Equal(OverworldTerrainBrush.NorthWestCornerTile,
+        Assert.Equal(OverworldTerrainBrush.SouthWestCornerTile,
             OverworldTerrainBrush.ApplyPathStroke(CreateWorld(), [(2, 3), (2, 4), (3, 4)]).TileAt(2, 4));
     }
 
@@ -99,8 +99,10 @@ public sealed class OverworldTerrainBrushTests
         var erased = OverworldTerrainBrush.EraseLakeStroke(lake, [(4, 3)]);
 
         Assert.Equal((byte)0x42, erased.TileAt(4, 3));
-        Assert.NotEqual(OverworldTerrainBrush.WaterTile, erased.TileAt(3, 3));
-        Assert.NotEqual(OverworldTerrainBrush.WaterTile, erased.TileAt(5, 3));
+        // The stock set has no verified one-tile narrow endpoint; use its
+        // ordinary water fallback rather than inventing a non-vanilla tile.
+        Assert.Equal(OverworldTerrainBrush.WaterTile, erased.TileAt(3, 3));
+        Assert.Equal(OverworldTerrainBrush.WaterTile, erased.TileAt(5, 3));
     }
 
     private static OverworldDocument CreateWorld() =>
