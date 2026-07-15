@@ -1,0 +1,6 @@
+<Project>
+  <!-- Avalonia's anonymous build telemetry writes to a per-user protected path
+       in restricted build environments. It is not required to compile or run
+       Warp Whistle, so keep builds deterministic and local. -->
+  <Target Name="AvaloniaStats" />
+</Project>

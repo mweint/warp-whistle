@@ -61,6 +61,8 @@ public sealed class EnhancedMmc3RomBuilder
         Array.Fill(output, (byte)0xFF);
         compiledVanilla[..HeaderSize].CopyTo(output);
         output[4] = 32; // 512 KiB PRG in 16 KiB iNES units.
+        output[6] |= 0x02; // Battery-backed WRAM: Enhanced save foundation.
+        output[8] = 1; // iNES 1.0: one 8 KiB PRG-RAM unit, explicitly battery-backed.
 
         var sourcePrg = compiledVanilla.Slice(source.PrgOffset, OriginalPrgBytes);
         var targetPrg = output.AsSpan(HeaderSize, ExpandedPrgBytes);
@@ -68,7 +70,7 @@ public sealed class EnhancedMmc3RomBuilder
         sourcePrg[FixedBankSourceOffset..].CopyTo(targetPrg[FixedBankTargetOffset..]);
         compiledVanilla.Slice(source.ChrOffset, source.ChrLength).CopyTo(output.AsSpan(HeaderSize + ExpandedPrgBytes));
 
-        if (output[4] != 32 || output.Length != HeaderSize + ExpandedPrgBytes + source.ChrLength ||
+        if (output[4] != 32 || (output[6] & 0x02) == 0 || output[8] != 1 || output.Length != HeaderSize + ExpandedPrgBytes + source.ChrLength ||
             !targetPrg[..FixedBankSourceOffset].SequenceEqual(sourcePrg[..FixedBankSourceOffset]) ||
             !targetPrg[FixedBankTargetOffset..].SequenceEqual(sourcePrg[FixedBankSourceOffset..]))
         {

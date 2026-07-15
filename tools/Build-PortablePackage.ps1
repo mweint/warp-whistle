@@ -24,6 +24,9 @@ foreach ($folder in @("Resources", "Tools")) {
 }
 New-Item -ItemType Directory -Force (Join-Path $root "Tools/asm6f") | Out-Null
 Copy-Item -LiteralPath $Assembler -Destination (Join-Path $root "Tools/asm6f/asm6f_64.exe") -Force
+$license = Join-Path (Split-Path -Parent $Assembler) "readme-original.txt"
+if (-not (Test-Path $license)) { throw "Assembler license is missing beside $Assembler" }
+Copy-Item -LiteralPath $license -Destination (Join-Path $root "Tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt") -Force
 
 foreach ($folder in @("ROMs", "Emulators", "Projects", "Exports", "Data")) {
     New-Item -ItemType Directory -Force (Join-Path $root $folder) | Out-Null

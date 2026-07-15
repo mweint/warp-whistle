@@ -30,6 +30,15 @@ internal sealed record OverworldScreenChoice(int Value, string Name)
 {
     public override string ToString() => Name;
 }
+internal sealed record OverworldMapSpriteChoice(byte Value, string Name)
+{
+    public override string ToString() => Name;
+}
+internal sealed record OverworldMapSpriteEntry(OverworldMapSpriteChoice Choice, CatalogPreviewData Preview)
+{
+    public string ToolTip => Choice.Name;
+}
+internal sealed record DiagnosticListItem(string Text, IBrush Foreground);
 
 public sealed partial class MainWindow : Window
 {
@@ -90,11 +99,26 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<ComboBox, string> _patchOverrideIds = [];
     private IReadOnlyList<OverworldDocument> _overworlds = [];
     private IReadOnlyList<OverworldTileEntry> _overworldTileEntries = [];
+    private IReadOnlyList<OverworldMapSpriteEntry> _overworldMapSpriteEntries = [];
+    private int _overworldMapSpritePreviewPalette = -1;
     private OverworldDocument? _overworldPaintStart;
     private OverworldDocument? _overworldNodeMoveStart;
+    private OverworldDocument? _overworldLockMoveStart;
     private byte _selectedOverworldTile = 0xFE;
     private OverworldLevelPointer? _selectedOverworldNode;
     private OverworldLockBridge? _selectedOverworldLock;
+    private OverworldMapSprite? _selectedOverworldMapSprite;
+    private OverworldDocument? _overworldMapSpriteMoveStart;
+    private bool _refreshingOverworldMapSprite;
+    private bool _refreshingOverworldTilePicker;
+    private bool _suppressOverworldWorldSelection;
+    private bool _overworldTerrainPathMode;
+    private bool _overworldTerrainWaterMode;
+    private byte _selectedOverworldMapSpriteType = 0x03;
+    private bool _levelGridVisible = true;
+    private bool _overworldGridVisible = true;
+    private int _overworldNodeCapacity;
+    private string? _playModeBeforeOverworld;
     private bool _refreshingOverworldNode;
     private readonly Dictionary<(int Palette, bool Sprites), byte[]> _overworldPaletteDrafts = [];
     private readonly DispatcherTimer _overworldAnimationTimer = new() { Interval = TimeSpan.FromSeconds(1d / 60d) };
@@ -114,7 +138,9 @@ public sealed partial class MainWindow : Window
         TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
         OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
-        _catalogVariantFamilies = CatalogVariantFamilies.Load(BundledContentPaths.ItemGroupsPath, out var itemsConfigError);
+        var itemsConfigPath = Path.Combine(AppContext.BaseDirectory, "Resources", "items.json");
+        if (!File.Exists(itemsConfigPath)) itemsConfigPath = Path.Combine(AppContext.BaseDirectory, "items.json");
+        _catalogVariantFamilies = CatalogVariantFamilies.Load(itemsConfigPath, out var itemsConfigError);
         if (itemsConfigError is not null)
             AddDiagnostics([Diagnostics.Warning("ITEMS_CONFIG", itemsConfigError)]);
         if (SidebarTabs.Items.Count >= 2)
@@ -135,6 +161,8 @@ public sealed partial class MainWindow : Window
         EditorCanvas.CanvasItemSelected += ClearCatalogPasteSource;
         OverworldCanvas.LevelPointerSelected += OverworldCanvas_LevelPointerSelected;
         OverworldCanvas.TilePaintRequested += OverworldCanvas_TilePaintRequested;
+        OverworldCanvas.TilePicked += OverworldCanvas_TilePicked;
+        OverworldCanvas.TileMoveRequested += OverworldCanvas_TileMoveRequested;
         OverworldCanvas.PaintStarted += OverworldCanvas_PaintStarted;
         OverworldCanvas.PaintCompleted += OverworldCanvas_PaintCompleted;
         OverworldCanvas.ZoomRequested += OverworldCanvas_ZoomRequested;
@@ -142,7 +170,16 @@ public sealed partial class MainWindow : Window
         OverworldCanvas.NodeMoveStarted += OverworldCanvas_NodeMoveStarted;
         OverworldCanvas.NodeMoveRequested += OverworldCanvas_NodeMoveRequested;
         OverworldCanvas.NodeMoveCompleted += OverworldCanvas_NodeMoveCompleted;
+        OverworldCanvas.NodePlacementRequested += OverworldCanvas_NodePlacementRequested;
         OverworldCanvas.LockBridgeSelected += OverworldCanvas_LockBridgeSelected;
+        OverworldCanvas.LockMoveStarted += OverworldCanvas_LockMoveStarted;
+        OverworldCanvas.LockMoveRequested += OverworldCanvas_LockMoveRequested;
+        OverworldCanvas.LockMoveCompleted += OverworldCanvas_LockMoveCompleted;
+        OverworldCanvas.MapSpriteSelected += OverworldCanvas_MapSpriteSelected;
+        OverworldCanvas.MapSpriteMoveStarted += OverworldCanvas_MapSpriteMoveStarted;
+        OverworldCanvas.MapSpriteMoveRequested += OverworldCanvas_MapSpriteMoveRequested;
+        OverworldCanvas.MapSpriteMoveCompleted += OverworldCanvas_MapSpriteMoveCompleted;
+        OverworldCanvas.MapSpritePlacementRequested += OverworldCanvas_MapSpritePlacementRequested;
         _overworldAnimationTimer.Tick += OverworldAnimationTimer_Tick;
         _catalog.AddRange(BuildCatalog(1));
         ApplyCatalogFilter();
@@ -286,12 +323,14 @@ public sealed partial class MainWindow : Window
         }
         else if (e.Key == Key.Delete && e.Source is not TextBox)
         {
-            EditorCanvas.DeleteSelection();
+            if (OverworldToggle.IsChecked == true) DeleteSelectedOverworldItem();
+            else EditorCanvas.DeleteSelection();
             e.Handled = true;
         }
         else if (e.Key == Key.Back && e.Source is not TextBox)
         {
-            EditorCanvas.DeleteSelection();
+            if (OverworldToggle.IsChecked == true) DeleteSelectedOverworldItem();
+            else EditorCanvas.DeleteSelection();
             e.Handled = true;
         }
     }
@@ -413,6 +452,12 @@ public sealed partial class MainWindow : Window
 
     private async void ExportRom_Click(object? sender, RoutedEventArgs e)
     {
+        if (_project?.OutputMode == RomOutputMode.EnhancedMmc3)
+        {
+            AddDiagnostics([Diagnostics.Warning(
+                "ENHANCED_EXPERIMENTAL",
+                "Enhanced output is experimental: it uses battery-backed save RAM and expanded PRG. Test it in Mesen before relying on it.")]);
+        }
         var artifact = CompileCurrentProject();
         if (!artifact.IsSuccess)
         {
@@ -1130,7 +1175,11 @@ public sealed partial class MainWindow : Window
     private void Redo_Click(object? sender, RoutedEventArgs e) => Redo();
     private void Copy_Click(object? sender, RoutedEventArgs e) => EditorCanvas.CopySelection();
     private void Paste_Click(object? sender, RoutedEventArgs e) => EditorCanvas.PasteSelection();
-    private void Delete_Click(object? sender, RoutedEventArgs e) => EditorCanvas.DeleteSelection();
+    private void Delete_Click(object? sender, RoutedEventArgs e)
+    {
+        if (OverworldToggle.IsChecked == true) DeleteSelectedOverworldItem();
+        else EditorCanvas.DeleteSelection();
+    }
 
     private async void LevelList_SelectionChanged(object? sender, EventArgs e)
     {
@@ -1213,9 +1262,11 @@ public sealed partial class MainWindow : Window
 
     private void DesignerNotice_Click(object? sender, RoutedEventArgs e) => DiagnosticsPanel.IsExpanded = true;
 
+    private void OpenKeyboardShortcuts_Click(object? sender, RoutedEventArgs e) => new KeyboardShortcutsWindow().ShowDialog(this);
+
     private void ClearLevel_Click(object? sender, RoutedEventArgs e) => EditorCanvas.ClearLevel();
 
-    private void OverworldToggle_Click(object? sender, RoutedEventArgs e)
+    private async void OverworldToggle_Click(object? sender, RoutedEventArgs e)
     {
         if (OverworldToggle.IsChecked == true)
         {
@@ -1234,9 +1285,10 @@ public sealed partial class MainWindow : Window
                 return;
             }
             _overworlds = parsed.Value!;
+            _overworldNodeCapacity = _overworlds.Take(8).Sum(static map => map.LevelPointers.Count);
             if (_project?.OverworldTiles is { } savedTiles)
             {
-                _overworlds = _overworlds.Select(map => savedTiles.FirstOrDefault(item => item.World == map.World) is { Tiles.Count: > 0 } saved && saved.Tiles.Count == map.Tiles.Count
+                _overworlds = _overworlds.Select(map => savedTiles.FirstOrDefault(item => item.World == map.World) is { Tiles.Count: > 0 } saved && saved.Tiles.Count % (OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight) == 0 && saved.Tiles.Count <= 4 * OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight
                     ? map with { Tiles = saved.Tiles.ToArray() }
                     : map).ToArray();
             }
@@ -1244,10 +1296,20 @@ public sealed partial class MainWindow : Window
             {
                 _overworlds = _overworlds.Select(map => map with
                 {
-                    LevelPointers = map.LevelPointers.Select(pointer => savedNodes.FirstOrDefault(item => item.World == map.World && item.Index == pointer.Index) is { } saved
+                    LevelPointers = (_project.OverworldNodeSets?.Any(item => item.World == map.World) == true ? map.LevelPointers : map.LevelPointers.Select(pointer => savedNodes.FirstOrDefault(item => item.World == map.World && item.Index == pointer.Index) is { } saved
                         ? pointer with { Screen = saved.Screen, Column = saved.Column, Row = saved.Row, ObjectSet = saved.ObjectSet, LevelOffset = saved.LevelOffset, EnemyOffset = saved.EnemyOffset }
-                        : pointer).ToArray()
+                        : pointer).ToArray())
                 }).ToArray();
+            }
+            if (_project?.OverworldNodeSets is { } nodeSets)
+            {
+                _overworlds = _overworlds.Select(map => nodeSets.FirstOrDefault(item => item.World == map.World) is { } set
+                    ? map with
+                    {
+                        LevelPointers = set.Nodes.Select((node, index) => new OverworldLevelPointer(index, node.Screen, node.Column, node.Row,
+                            node.ObjectSet, node.LevelOffset, node.EnemyOffset, 0, 0, 0, 0)).ToArray()
+                    }
+                    : map).ToArray();
             }
             if (_project?.OverworldLocksAndBridges is { } savedLocks)
             {
@@ -1265,6 +1327,15 @@ public sealed partial class MainWindow : Window
                             : item).ToArray()
                 }).ToArray();
             }
+            if (_project?.OverworldMapSprites is { } savedSprites)
+            {
+                _overworlds = _overworlds.Select(map => map with
+                {
+                    MapSprites = map.MapSprites.Select(item => savedSprites.FirstOrDefault(saved => saved.World == map.World && saved.Index == item.Index) is { } saved
+                        ? item with { Screen = saved.Screen, Column = saved.Column, Row = saved.Row, Type = saved.Type, Item = saved.Item }
+                        : item).ToArray()
+                }).ToArray();
+            }
             OverworldWorldBox.ItemsSource = _overworlds;
             OverworldWorldBox.SelectedIndex = 0;
             RefreshOverworldScreenChoices(_overworlds[0]);
@@ -1273,11 +1344,24 @@ public sealed partial class MainWindow : Window
             _overworldAnimationFrame = 0;
             _overworldAnimationTicks = _overworlds[0].AnimationSpeed;
             if (OverworldAnimationToggle.IsChecked == true) _overworldAnimationTimer.Start();
+            LevelLabel.Text = "World";
+            LevelLabel.IsVisible = true;
+            LevelList.IsVisible = false;
+            OverworldToggle.Content = "Levels";
+            OverworldToggle.IsVisible = true;
             OverworldWorldBox.IsVisible = true;
-            OverworldScreenBox.IsVisible = _overworlds[0].ScreenCount > 1;
             SetOverworldEditMode(0);
             SetLevelToolbarVisibility(false);
-            OverworldAnimationToggle.IsVisible = true;
+            LevelLabel.IsVisible = true;
+            OverworldToggle.IsVisible = true;
+            GridToggle.IsVisible = true;
+            GridToggle.IsChecked = _overworldGridVisible;
+            OverworldCanvas.ShowGrid = _overworldGridVisible;
+            OverworldMapBar.IsVisible = true;
+            _playModeBeforeOverworld = _playMode;
+            _playMode = "rom";
+            UpdatePlayModeUi();
+            PlayButton.IsVisible = true;
             SidebarTabs.IsVisible = false;
             OverworldTilePicker.IsVisible = true;
             OverworldNodeEditor.IsVisible = false;
@@ -1288,12 +1372,26 @@ public sealed partial class MainWindow : Window
         }
         else
         {
+            if (!await ResolveUnsavedChangesAsync("leaving the overworld editor"))
+            {
+                OverworldToggle.IsChecked = true;
+                return;
+            }
             _overworldAnimationTimer.Stop();
             _overworldPaintStart = null;
+            LevelLabel.Text = "Level";
+            OverworldToggle.Content = "Overworld";
             OverworldWorldBox.IsVisible = false;
-            OverworldScreenBox.IsVisible = false;
             SetLevelToolbarVisibility(true);
-            OverworldAnimationToggle.IsVisible = false;
+            GridToggle.IsChecked = _levelGridVisible;
+            EditorCanvas.ShowGrid = _levelGridVisible;
+            OverworldMapBar.IsVisible = false;
+            if (_playModeBeforeOverworld is not null)
+            {
+                _playMode = _playModeBeforeOverworld;
+                _playModeBeforeOverworld = null;
+                UpdatePlayModeUi();
+            }
             SidebarTabs.IsVisible = true;
             OverworldTilePicker.IsVisible = false;
             OverworldNodeEditor.IsVisible = false;
@@ -1303,6 +1401,7 @@ public sealed partial class MainWindow : Window
             OverworldScrollViewer.IsVisible = false;
             LevelScrollViewer.IsVisible = true;
         }
+        UpdateSaveState();
     }
 
     private void OverworldAnimationToggle_Click(object? sender, RoutedEventArgs e)
@@ -1318,29 +1417,154 @@ public sealed partial class MainWindow : Window
 
     private void OverworldPaintMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(0);
 
+    private void OverworldTerrainMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(4);
+
     private void OverworldNodeMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(1);
 
     private void OverworldLockMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(2);
 
+    private void OverworldMapSpriteMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(3);
+
+    private void OverworldShowAllOverlays_Click(object? sender, RoutedEventArgs e)
+    {
+        OverworldShowEntrancesMenuItem.IsChecked = OverworldShowLocksMenuItem.IsChecked = OverworldShowSpritesMenuItem.IsChecked = true;
+        ApplyOverworldOverlayVisibility();
+    }
+    private void OverworldHideAllOverlays_Click(object? sender, RoutedEventArgs e)
+    {
+        OverworldShowEntrancesMenuItem.IsChecked = OverworldShowLocksMenuItem.IsChecked = OverworldShowSpritesMenuItem.IsChecked = false;
+        ApplyOverworldOverlayVisibility();
+    }
+    private void OverworldOverlayPart_Click(object? sender, RoutedEventArgs e) => ApplyOverworldOverlayVisibility();
+    private void ApplyOverworldOverlayVisibility()
+    {
+        OverworldCanvas.ShowNodes = OverworldShowEntrancesMenuItem.IsChecked == true;
+        OverworldCanvas.ShowLocks = OverworldShowLocksMenuItem.IsChecked == true;
+        OverworldCanvas.ShowMapSprites = OverworldShowSpritesMenuItem.IsChecked == true;
+    }
+
     private void SetOverworldEditMode(int mode)
     {
         OverworldPaintModeToggle.IsChecked = mode == 0;
+        OverworldTerrainModeToggle.IsChecked = mode == 4;
         OverworldNodeModeToggle.IsChecked = mode == 1;
         OverworldLockModeToggle.IsChecked = mode == 2;
+        OverworldMapSpriteModeToggle.IsChecked = mode == 3;
+        OverworldCanvas.EditTileMoves = mode == 0;
+        OverworldCanvas.EditTerrainPaths = mode == 4;
+        OverworldCanvas.EditTerrainWater = mode == 4 && _overworldTerrainWaterMode;
         OverworldCanvas.EditNodes = mode == 1;
         OverworldCanvas.EditLocks = mode == 2;
+        OverworldCanvas.EditMapSprites = mode == 3;
+        _overworldTerrainPathMode = mode == 4;
+        OverworldContextEditor.IsVisible = false;
+        switch (mode)
+        {
+            case 1:
+                ShowOverworldModeHint("Click an empty map tile to add an entrance. Click or drag an outlined entrance to choose its destination.");
+                OverworldContextEditor.IsVisible = true;
+                OverworldNodeHelpEditor.IsVisible = true;
+                break;
+            case 2:
+                ShowOverworldLockPicker();
+                OverworldContextEditor.IsVisible = true;
+                OverworldLockHelpEditor.IsVisible = true;
+                break;
+            case 3:
+                ShowOverworldMapSpritePicker();
+                break;
+            case 4:
+                ShowOverworldTerrainPicker();
+                break;
+            default:
+                ShowOverworldTilePicker();
+                break;
+        }
         if (mode != 1)
         {
             OverworldNodeEditor.IsVisible = false;
+            OverworldNodeHelpEditor.IsVisible = false;
             _selectedOverworldNode = null;
         }
-        if (mode != 2) { OverworldLockEditor.IsVisible = false; _selectedOverworldLock = null; }
+        if (mode != 2) { OverworldLockEditor.IsVisible = false; OverworldLockHelpEditor.IsVisible = false; _selectedOverworldLock = null; }
+        if (mode != 3) { OverworldMapSpriteEditor.IsVisible = false; _selectedOverworldMapSprite = null; }
         RomStatusText.Text = mode switch
         {
-            1 => "Edit nodes: click a white outline to choose its destination, or drag it to move it.",
-            2 => "Locks: click an orange outline, then choose its post-fortress replacement tile.",
-            _ => "Paint tiles: select a tile, then click or drag on the map."
+            1 => "Nodes: click an empty map tile to add; click or drag an outline to edit it.",
+            2 => "Locks: drag an orange outline to move it; select one to change its replacement tile.",
+            3 => "Map sprites: drag a purple marker to move it; right-click an empty tile to add the selected type.",
+            4 => "Terrain paths: right-drag paints stock paths; click a straight alternate path to switch its graphic.",
+            _ => "Tiles: drag to relocate; left-click selects; right-click places the selected tile."
         };
+    }
+
+    private void ShowOverworldTilePicker(string title = "Map tiles", string? help = null)
+    {
+        OverworldPickerTitle.Text = title;
+        OverworldPickerHelp.Text = help ?? "Drag a tile to relocate it. Left-click selects; right-click places the selected tile.";
+        OverworldTileFilters.IsVisible = true;
+        OverworldModeHint.IsVisible = false;
+        OverworldPickerScroll.IsVisible = true;
+        OverworldTileGrid.IsVisible = true;
+        OverworldMapSpriteGrid.IsVisible = false;
+        ApplyOverworldTileFilter();
+    }
+
+    private void ShowOverworldMapSpritePicker()
+    {
+        OverworldPickerTitle.Text = "Map sprites";
+        OverworldPickerHelp.Text = "Choose a sprite, then right-click an empty map tile to place it. Drag a sprite to move it.";
+        OverworldTileFilters.IsVisible = false;
+        OverworldModeHint.IsVisible = false;
+        OverworldPickerScroll.IsVisible = true;
+        OverworldTileGrid.IsVisible = false;
+        OverworldMapSpriteGrid.IsVisible = true;
+        OverworldMapSpriteGrid.ItemsSource = _overworldMapSpriteEntries;
+    }
+
+    private void ShowOverworldTerrainPicker()
+    {
+        OverworldPickerTitle.Text = "Terrain";
+        OverworldPickerHelp.Text = "Choose roads or lakes below. Right-drag paints the selected stock terrain brush.";
+        OverworldTileFilters.IsVisible = false;
+        OverworldModeHint.IsVisible = false;
+        OverworldPickerScroll.IsVisible = true;
+        OverworldTileGrid.IsVisible = true;
+        OverworldMapSpriteGrid.IsVisible = false;
+        var terrainTiles = _overworldTileEntries.Where(item => item.Value is 0x45 or OverworldTerrainBrush.WaterTile).ToArray();
+        _refreshingOverworldTilePicker = true;
+        try
+        {
+            OverworldTileGrid.ItemsSource = terrainTiles;
+            OverworldTileGrid.SelectedItem = terrainTiles.FirstOrDefault(item => item.Value == (_overworldTerrainWaterMode ? OverworldTerrainBrush.WaterTile : (byte)0x45));
+        }
+        finally { _refreshingOverworldTilePicker = false; }
+    }
+
+    private void ShowOverworldModeHint(string help)
+    {
+        OverworldPickerTitle.Text = "Entrances";
+        OverworldPickerHelp.Text = help;
+        OverworldTileFilters.IsVisible = false;
+        OverworldPickerScroll.IsVisible = false;
+        OverworldModeHint.IsVisible = false;
+    }
+
+    private void ShowOverworldLockPicker()
+    {
+        OverworldPickerTitle.Text = "Locks / bridges";
+        OverworldPickerHelp.Text = "Drag an outlined lock or bridge to move it. Select one to change its replacement tile.";
+        OverworldTileFilters.IsVisible = false;
+        OverworldPickerScroll.IsVisible = false;
+        OverworldModeHint.IsVisible = false;
+    }
+
+    private void OverworldMapSpriteGrid_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (OverworldMapSpriteGrid.SelectedItem is not OverworldMapSpriteEntry entry) return;
+        _selectedOverworldMapSpriteType = entry.Choice.Value;
+        if (_refreshingOverworldMapSprite || _selectedOverworldMapSprite is null) return;
+        UpdateSelectedOverworldMapSprite();
     }
 
     private void SetLevelToolbarVisibility(bool visible)
@@ -1350,13 +1574,29 @@ public sealed partial class MainWindow : Window
         PlayButton.IsVisible = visible;
         TracePlayLevelToggle.IsVisible = visible && TraceToolsEnabled;
         GridToggle.IsVisible = visible;
-        ClearLevelButton.IsVisible = visible;
     }
 
-    private void OverworldWorldBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    private async void OverworldWorldBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (OverworldWorldBox.SelectedItem is OverworldDocument selected &&
-            _overworlds.FirstOrDefault(item => item.World == selected.World) is { } world)
+        if (_suppressOverworldWorldSelection || OverworldWorldBox.SelectedItem is not OverworldDocument selected) return;
+        var current = OverworldCanvas.World;
+        if (current?.World == selected.World) return;
+
+        if (current is not null && _isProjectDirty)
+        {
+            if (!await ResolveUnsavedChangesAsync("switching worlds"))
+            {
+                RestoreOverworldWorldSelection(current.World);
+                return;
+            }
+
+            // Saving or discarding changes both establish a clean project snapshot.
+            // Rehydrate from it before navigating so "Don't Save" cannot leak edits.
+            if (!RestoreOverworldsFromProject(selected.World)) return;
+            return;
+        }
+
+        if (_overworlds.FirstOrDefault(item => item.World == selected.World) is { } world)
         {
             RefreshOverworldScreenChoices(world);
             BuildOverworldTilePicker(world);
@@ -1366,9 +1606,115 @@ public sealed partial class MainWindow : Window
         RenderSelectedOverworld();
     }
 
+    private void RestoreOverworldWorldSelection(int world)
+    {
+        _suppressOverworldWorldSelection = true;
+        OverworldWorldBox.SelectedItem = _overworlds.FirstOrDefault(item => item.World == world);
+        _suppressOverworldWorldSelection = false;
+    }
+
+    private bool RestoreOverworldsFromProject(int selectedWorld)
+    {
+        if (_rom is null) return false;
+        var parsed = Smb3OverworldParser.Parse(_rom);
+        if (!parsed.IsSuccess) { AddDiagnostics(parsed.Diagnostics); return false; }
+
+        var maps = parsed.Value!;
+        if (_project?.OverworldTiles is { } savedTiles)
+            maps = maps.Select(map => savedTiles.FirstOrDefault(item => item.World == map.World) is { Tiles.Count: > 0 } saved &&
+                saved.Tiles.Count % (OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight) == 0 &&
+                saved.Tiles.Count <= 4 * OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight
+                    ? map with { Tiles = saved.Tiles.ToArray() } : map).ToArray();
+        if (_project?.OverworldLevelPointers is { } savedNodes)
+            maps = maps.Select(map => map with { LevelPointers = (_project.OverworldNodeSets?.Any(item => item.World == map.World) == true ? map.LevelPointers :
+                map.LevelPointers.Select(pointer => savedNodes.FirstOrDefault(item => item.World == map.World && item.Index == pointer.Index) is { } saved
+                    ? pointer with { Screen = saved.Screen, Column = saved.Column, Row = saved.Row, ObjectSet = saved.ObjectSet, LevelOffset = saved.LevelOffset, EnemyOffset = saved.EnemyOffset }
+                    : pointer).ToArray()) }).ToArray();
+        if (_project?.OverworldNodeSets is { } nodeSets)
+            maps = maps.Select(map => nodeSets.FirstOrDefault(item => item.World == map.World) is { } set
+                ? map with { LevelPointers = set.Nodes.Select((node, index) => new OverworldLevelPointer(index, node.Screen, node.Column, node.Row, node.ObjectSet, node.LevelOffset, node.EnemyOffset, 0, 0, 0, 0)).ToArray() }
+                : map).ToArray();
+        if (_project?.OverworldLocksAndBridges is { } savedLocks)
+            maps = maps.Select(map => map with { LocksAndBridges = map.LocksAndBridges.Select(item => savedLocks.FirstOrDefault(saved => saved.World == map.World && saved.Slot == item.Slot) is { } saved
+                ? item with { Screen = saved.Screen, Column = saved.Column, Row = saved.Row, ReplacementTile = saved.ReplacementTile } : item).ToArray() }).ToArray();
+        if (_project?.OverworldMapSprites is { } savedSprites)
+            maps = maps.Select(map => map with { MapSprites = map.MapSprites.Select(item => savedSprites.FirstOrDefault(saved => saved.World == map.World && saved.Index == item.Index) is { } saved
+                ? item with { Screen = saved.Screen, Column = saved.Column, Row = saved.Row, Type = saved.Type, Item = saved.Item } : item).ToArray() }).ToArray();
+
+        _overworlds = maps;
+        _overworldNodeCapacity = maps.Take(8).Sum(static map => map.LevelPointers.Count);
+        var selected = maps.FirstOrDefault(item => item.World == selectedWorld) ?? maps[0];
+        _suppressOverworldWorldSelection = true;
+        OverworldWorldBox.ItemsSource = maps;
+        OverworldWorldBox.SelectedItem = selected;
+        _suppressOverworldWorldSelection = false;
+        RefreshOverworldScreenChoices(selected);
+        BuildOverworldTilePicker(selected);
+        _overworldAnimationFrame = 0;
+        _overworldAnimationTicks = selected.AnimationSpeed;
+        RenderSelectedOverworld();
+        return true;
+    }
+
     private void OverworldScreenBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         OverworldCanvas.VisibleScreen = (OverworldScreenBox.SelectedItem as OverworldScreenChoice)?.Value ?? -1;
+    }
+
+    private void OverworldAddScreen_Click(object? sender, RoutedEventArgs e)
+        => AddOverworldPage();
+
+    private void AddOverworldPage()
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        if (world.ScreenCount >= 4) { RomStatusText.Text = "This world already uses the vanilla maximum of four pages."; return; }
+        var used = _overworlds.Sum(map => map.ScreenCount);
+        if (used >= 20) { RomStatusText.Text = "All 20 verified vanilla overworld pages are in use. Remove a page from another world first."; return; }
+        // There is no universal blank map tile. Seed a new page with the
+        // current world's upper-left background tile, then let the designer
+        // paint it deliberately rather than overwriting it with guessed $42.
+        var fill = world.TileAt(0, 0);
+        var next = world.WithTiles(world.Tiles.Concat(Enumerable.Repeat(fill, OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight)).ToArray());
+        _overworlds = _overworlds.Select(map => map.World == next.World ? next : map).ToArray();
+        _project = _project.WithOverworld(next); _overworldHistory.Record(world); _isProjectDirty = true; UpdateSaveState();
+        RefreshOverworldScreenChoices(next); RenderOverworld(next);
+        RomStatusText.Text = $"Added a page to World {next.World + 1}, seeded with tile ${fill:X2}. Vanilla page pool: {used + 1}/20.";
+    }
+
+    private void OverworldRemoveScreen_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        if (world.ScreenCount <= 1) { RomStatusText.Text = "Every overworld needs at least one page."; return; }
+        // Pages are a contiguous vanilla stream. Removing only the last page is
+        // explicit and avoids implying that the all-screens view selects a page.
+        var screen = world.ScreenCount - 1;
+        var pageNodes = world.LevelPointers.Count(node => node.Screen == screen);
+        var pageSprites = world.MapSprites.Count(item => !item.IsEmpty && item.Screen == screen);
+        var pageLocks = world.LocksAndBridges.Count(item => item.Screen == screen);
+        if (pageLocks > 0)
+        {
+            RomStatusText.Text = "This page contains a fortress lock/bridge. Move that orange lock first; vanilla SMB3 has no safe independent lock deletion.";
+            return;
+        }
+        var start = screen * OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight;
+        var nodes = world.LevelPointers
+            .Where(node => node.Screen != screen)
+            .Select(node => node with { Screen = node.Screen > screen ? node.Screen - 1 : node.Screen })
+            .Select((node, index) => node with { Index = index }).ToArray();
+        var sprites = world.MapSprites.Select(item => item.Screen == screen && !item.IsEmpty
+            ? item with { Screen = 0, Column = 0, Row = OverworldDocument.FirstMapRow, Type = 0, Item = 0 }
+            : item with { Screen = item.Screen > screen ? item.Screen - 1 : item.Screen }).ToArray();
+        var next = world.WithTiles(world.Tiles.Take(start).Concat(world.Tiles.Skip(start + OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight)).ToArray()) with
+        {
+            LevelPointers = nodes,
+            MapSprites = sprites
+        };
+        _overworlds = _overworlds.Select(map => map.World == next.World ? next : map).ToArray();
+        _project = _project.WithOverworld(next).WithOverworldNodes(next);
+        foreach (var sprite in sprites) _project = _project.WithOverworldMapSprite(sprite);
+        _overworldHistory.Record(world); _isProjectDirty = true; UpdateSaveState();
+        RefreshOverworldScreenChoices(next); RenderOverworld(next);
+        RomStatusText.Text = $"Removed the last page from World {next.World + 1} ({pageNodes} entrances and {pageSprites} map sprites removed). Vanilla page pool: {_overworlds.Sum(map => map.ScreenCount)}/20.";
     }
 
     private void RefreshOverworldScreenChoices(OverworldDocument world)
@@ -1378,6 +1724,7 @@ public sealed partial class MainWindow : Window
         OverworldScreenBox.SelectedIndex = 0;
         OverworldScreenBox.IsVisible = world.ScreenCount > 1;
         OverworldCanvas.VisibleScreen = -1;
+        OverworldPageSummary.Text = $"Pages {world.ScreenCount}/4";
     }
 
     private void RenderSelectedOverworld()
@@ -1396,7 +1743,32 @@ public sealed partial class MainWindow : Window
         {
             OverworldCanvas.World = world;
             OverworldCanvas.Snapshot = rendered.Value!;
+            EnsureOverworldMapSpritePreviews(world);
+            var invalidNodes = world.LevelPointers
+                .Select(node => (Node: node, Problem: Smb3OverworldSerializer.GetNodeValidationError(world, node)))
+                .Where(item => item.Problem is not null)
+                .ToArray();
+            OverworldCanvas.InvalidNodeIndices = invalidNodes.Select(item => item.Node.Index).ToHashSet();
+            OverworldNodeProblemsText.Text = invalidNodes.Length == 0
+                ? string.Empty
+                : string.Join("\n", invalidNodes.Select(item => $"Map node {item.Node.Index + 1}: {item.Problem}. Red outline = needs correction."));
+            OverworldNodeProblemsText.IsVisible = invalidNodes.Length > 0;
         }
+    }
+
+    private void EnsureOverworldMapSpritePreviews(OverworldDocument world)
+    {
+        if (_rom is null || (_overworldMapSpriteEntries.Count > 0 && _overworldMapSpritePreviewPalette == world.SpritePalette)) return;
+        var entries = new List<OverworldMapSpriteEntry>();
+        foreach (var choice in MapSpriteTypes)
+        {
+            var preview = Smb3OverworldRenderer.RenderMapSpritePreview(_rom, world, choice.Value, EffectiveOverworldPalettes());
+            if (preview.IsSuccess) entries.Add(new OverworldMapSpriteEntry(choice, new CatalogPreviewData(preview.Value!.PixelWidth, preview.Value.PixelHeight, preview.Value.ArgbPixels)));
+        }
+        _overworldMapSpriteEntries = entries;
+        _overworldMapSpritePreviewPalette = world.SpritePalette;
+        OverworldCanvas.MapSpritePreviews = entries.ToDictionary(static item => item.Choice.Value, static item => item.Preview);
+        if (OverworldCanvas.EditMapSprites) ShowOverworldMapSpritePicker();
     }
 
     private void OpenOverworldPaletteEditor_Click(object? sender, RoutedEventArgs e)
@@ -1460,7 +1832,10 @@ public sealed partial class MainWindow : Window
     private void OverworldCanvas_LevelPointerSelected(object? sender, OverworldLevelPointer pointer)
     {
         _selectedOverworldNode = pointer;
-        OverworldNodeTitle.Text = $"Map node {pointer.Index + 1}";
+        OverworldCanvas.SelectedNodeIndex = pointer.Index;
+        OverworldContextEditor.IsVisible = true;
+        OverworldNodeHelpEditor.IsVisible = false;
+        OverworldNodeTitle.Text = $"Map node {pointer.Index + 1} · {OverworldCanvas.World?.LevelPointers.Count ?? 0}/{_overworldNodeCapacity}";
         OverworldNodeEditor.IsVisible = true;
         _refreshingOverworldNode = true;
         try
@@ -1478,10 +1853,151 @@ public sealed partial class MainWindow : Window
 
     private void OverworldCanvas_LockBridgeSelected(object? sender, OverworldLockBridge item)
     {
+        if (OverworldCanvas.World is not { } world) return;
         _selectedOverworldLock = item;
+        _selectedOverworldTile = item.ReplacementTile;
+        OverworldCanvas.PaintTile = item.ReplacementTile;
+        ShowOverworldTilePicker("Lock / bridge replacement", "Click a tile below to set what appears after the selected lock or bridge is cleared.");
+        ApplyOverworldTileFilter();
+        OverworldContextEditor.IsVisible = true;
+        OverworldLockHelpEditor.IsVisible = false;
         OverworldLockTitle.Text = $"Lock / bridge ${item.Slot:X2}";
+        var sourceTile = world.TileAt((item.Screen * OverworldDocument.ScreenWidth) + item.Column, item.Row - OverworldDocument.FirstMapRow);
+        OverworldLockSourcePreview.Preview = GetOverworldTilePreview(sourceTile);
+        OverworldLockReplacementPreview.Preview = GetOverworldTilePreview(item.ReplacementTile);
+        OverworldLockTriggerText.Text = item.TriggerIndex >= 0
+            ? $"Fortress trigger {item.TriggerIndex + 1} in World {item.World + 1}. This trigger clears this lock or bridge after its fortress is completed."
+            : "Fortress trigger could not be determined for this imported effect.";
+        OverworldLockReplacementText.Text = "Click a tile below to set the post-clear tile.";
         OverworldLockEditor.IsVisible = true;
-        RomStatusText.Text = $"Lock / bridge ${item.Slot:X2}: select a map tile, then apply its post-fortress replacement.";
+        RomStatusText.Text = $"Lock / bridge ${item.Slot:X2}: click a tile below to set its post-fortress replacement.";
+    }
+
+    private static readonly OverworldMapSpriteChoice[] MapSpriteTypes =
+    [
+        new(0x03, "Hammer Bro"), new(0x04, "Boomerang Bro"), new(0x05, "Heavy Bro"), new(0x06, "Fire Bro"),
+        new(0x07, "World 7 Plant"), new(0x09, "N-Spade Card"), new(0x0A, "White Toad House"), new(0x0B, "Coinship"),
+        new(0x0D, "Battleship"), new(0x0E, "Tank"), new(0x0F, "World 8 Airship"), new(0x10, "Canoe")
+    ];
+    private static readonly OverworldMapSpriteChoice[] MapSpriteItems =
+    [
+        new(0, "No item"), new(1, "Mushroom"), new(2, "Fire Flower"), new(3, "Leaf"), new(4, "Frog Suit"),
+        new(5, "Tanooki Suit"), new(6, "Hammer Suit"), new(7, "Cloud"), new(8, "P-Wing"), new(9, "Star"),
+        new(10, "Anchor"), new(11, "Hammer"), new(12, "Warp Whistle"), new(13, "Music Box")
+    ];
+
+    private void OverworldCanvas_MapSpriteSelected(object? sender, OverworldMapSprite sprite)
+    {
+        _selectedOverworldMapSprite = sprite;
+        OverworldContextEditor.IsVisible = true;
+        OverworldMapSpriteEditor.IsVisible = true;
+        OverworldMapSpriteTitle.Text = sprite.IsAirshipSlot ? "Airship slot (reserved)" : $"Map sprite {sprite.Index + 1} — {MapSpriteTypes.First(item => item.Value == sprite.Type).Name}";
+        _refreshingOverworldMapSprite = true;
+        try
+        {
+            OverworldMapSpriteItemBox.ItemsSource = MapSpriteItems;
+            _selectedOverworldMapSpriteType = sprite.Type;
+            OverworldMapSpriteGrid.SelectedItem = _overworldMapSpriteEntries.FirstOrDefault(item => item.Choice.Value == sprite.Type);
+            OverworldMapSpriteItemBox.SelectedItem = MapSpriteItems.FirstOrDefault(item => item.Value == sprite.Item);
+            OverworldMapSpriteItemBox.IsEnabled = !sprite.IsAirshipSlot;
+        }
+        finally { _refreshingOverworldMapSprite = false; }
+    }
+
+    private void OverworldCanvas_MapSpriteMoveStarted(object? sender, EventArgs e) => _overworldMapSpriteMoveStart = OverworldCanvas.World;
+
+    private void OverworldCanvas_MapSpriteMoveRequested(object? sender, OverworldMapSpriteMoveRequestEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world || e.Sprite.IsAirshipSlot) return;
+        if (world.MapSprites.Any(item => item.Index != e.Sprite.Index && !item.IsEmpty && item.Screen == e.Screen && item.Column == e.Column && item.Row == e.Row))
+        { RomStatusText.Text = "That tile already has a map sprite."; return; }
+        var current = world.MapSprites[e.Sprite.Index];
+        var nextSprite = current with { Screen = e.Screen, Column = e.Column, Row = e.Row };
+        var next = world.WithMapSprite(nextSprite);
+        _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
+        _project = _project.WithOverworldMapSprite(nextSprite);
+        _selectedOverworldMapSprite = nextSprite;
+        _isProjectDirty = true; UpdateSaveState(); RenderOverworld(next); e.Accepted = true;
+    }
+
+    private void OverworldCanvas_MapSpriteMoveCompleted(object? sender, EventArgs e)
+    {
+        if (_overworldMapSpriteMoveStart is { } before && OverworldCanvas.World is { } after && !before.MapSprites.SequenceEqual(after.MapSprites))
+            _overworldHistory.Record(before);
+        _overworldMapSpriteMoveStart = null;
+    }
+
+    private void OverworldCanvas_MapSpritePlacementRequested(object? sender, OverworldMapSpritePlacementRequestedEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world || world.World >= 8) { RomStatusText.Text = "Map sprites are available in Worlds 1-8 only."; return; }
+        if (world.MapSprites.Any(item => !item.IsEmpty && item.Screen == e.Screen && item.Column == e.Column && item.Row == e.Row)) { RomStatusText.Text = "That tile already has a map sprite."; return; }
+        var slot = world.MapSprites.FirstOrDefault(item => !item.IsAirshipSlot && item.IsEmpty);
+        if (slot is null) { RomStatusText.Text = "All 8 usable vanilla map-sprite slots are full."; return; }
+        var type = _selectedOverworldMapSpriteType;
+        var item = (OverworldMapSpriteItemBox.SelectedItem as OverworldMapSpriteChoice)?.Value ?? 0;
+        var nextSprite = slot with { Screen = e.Screen, Column = e.Column, Row = e.Row, Type = type, Item = item };
+        var next = world.WithMapSprite(nextSprite);
+        _overworlds = _overworlds.Select(map => map.World == next.World ? next : map).ToArray();
+        _project = _project.WithOverworldMapSprite(nextSprite);
+        _overworldHistory.Record(world); _isProjectDirty = true; UpdateSaveState(); RenderOverworld(next);
+        OverworldCanvas_MapSpriteSelected(this, nextSprite);
+        RomStatusText.Text = $"Added {MapSpriteTypes.First(choice => choice.Value == type).Name}.";
+    }
+
+    private void OverworldMapSpriteItemBox_SelectionChanged(object? sender, SelectionChangedEventArgs e) => UpdateSelectedOverworldMapSprite();
+    private void UpdateSelectedOverworldMapSprite()
+    {
+        if (_refreshingOverworldMapSprite || _project is null || _selectedOverworldMapSprite is null || _selectedOverworldMapSprite.IsAirshipSlot || OverworldCanvas.World is not { } world) return;
+        var type = _selectedOverworldMapSpriteType;
+        var item = (OverworldMapSpriteItemBox.SelectedItem as OverworldMapSpriteChoice)?.Value ?? _selectedOverworldMapSprite.Item;
+        var current = world.MapSprites[_selectedOverworldMapSprite.Index];
+        var nextSprite = current with { Type = type, Item = item };
+        var next = world.WithMapSprite(nextSprite);
+        _overworlds = _overworlds.Select(map => map.World == next.World ? next : map).ToArray();
+        _project = _project.WithOverworldMapSprite(nextSprite); _selectedOverworldMapSprite = nextSprite;
+        OverworldMapSpriteTitle.Text = $"Map sprite {nextSprite.Index + 1} — {MapSpriteTypes.First(item => item.Value == type).Name}";
+        _isProjectDirty = true; UpdateSaveState(); RenderOverworld(next);
+    }
+
+    private void OverworldCanvas_LockMoveStarted(object? sender, EventArgs e) =>
+        _overworldLockMoveStart = OverworldCanvas.World;
+
+    private void OverworldCanvas_LockMoveRequested(object? sender, OverworldLockMoveRequestEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        var current = world.LocksAndBridges.FirstOrDefault(item => item.Slot == e.LockBridge.Slot);
+        if (current is null) return;
+        if (world.LocksAndBridges.Any(item => item.Slot != current.Slot && item.Screen == e.Screen && item.Column == e.Column && item.Row == e.Row))
+        {
+            RomStatusText.Text = "That map tile already has a lock or bridge. Move it to an empty tile.";
+            return;
+        }
+
+        var nextLock = current with { Screen = e.Screen, Column = e.Column, Row = e.Row };
+        var next = world.WithLockBridge(nextLock);
+        _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
+        _project = _project.WithOverworldLockBridge(nextLock);
+        _selectedOverworldLock = nextLock;
+        _isProjectDirty = true;
+        UpdateSaveState();
+        RenderOverworld(next);
+        // Keep the source preview truthful while dragging: the pane is the
+        // lock editor, not a stale snapshot of the previous map position.
+        var sourceTile = next.TileAt((nextLock.Screen * OverworldDocument.ScreenWidth) + nextLock.Column,
+            nextLock.Row - OverworldDocument.FirstMapRow);
+        OverworldLockSourcePreview.Preview = GetOverworldTilePreview(sourceTile);
+        e.Accepted = true;
+    }
+
+    private void OverworldCanvas_LockMoveCompleted(object? sender, EventArgs e)
+    {
+        if (_overworldLockMoveStart is { } before && OverworldCanvas.World is { } after &&
+            before.World == after.World && !before.LocksAndBridges.SequenceEqual(after.LocksAndBridges))
+        {
+            _overworldHistory.Record(before);
+            RomStatusText.Text = "Moved lock / bridge. Its fortress trigger remains unchanged.";
+        }
+        _overworldLockMoveStart = null;
     }
 
     private void ApplyLockReplacement_Click(object? sender, RoutedEventArgs e)
@@ -1490,11 +2006,15 @@ public sealed partial class MainWindow : Window
         var current = world.LocksAndBridges.FirstOrDefault(item => item.Slot == _selectedOverworldLock.Slot);
         if (current is null) return;
 
+        if (current.ReplacementTile == OverworldCanvas.PaintTile) return;
+
         var nextLock = current with { ReplacementTile = OverworldCanvas.PaintTile };
         var next = world.WithLockBridge(nextLock);
         _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
         _project = _project.WithOverworldLockBridge(nextLock);
         _selectedOverworldLock = nextLock;
+        OverworldLockReplacementPreview.Preview = GetOverworldTilePreview(nextLock.ReplacementTile);
+        OverworldLockReplacementText.Text = "Replacement updated. Click another tile below to change it.";
         _isProjectDirty = true;
         UpdateSaveState();
         RenderOverworld(next);
@@ -1512,8 +2032,9 @@ public sealed partial class MainWindow : Window
         var nextPointer = current with { ObjectSet = target.Tileset, LevelOffset = layoutPointer, EnemyOffset = enemyPointer };
         var next = world.WithLevelPointer(nextPointer);
         _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
-        _project = _project.WithOverworldLevelPointer(next.World, nextPointer);
+        _project = _project.WithOverworldNodes(next);
         _selectedOverworldNode = nextPointer;
+        OverworldCanvas.SelectedNodeIndex = nextPointer.Index;
         _isProjectDirty = true;
         UpdateSaveState();
         RenderOverworld(next);
@@ -1581,7 +2102,7 @@ public sealed partial class MainWindow : Window
         var nextPointer = current with { Screen = e.Screen, Column = e.Column, Row = e.Row };
         var next = world.WithLevelPointer(nextPointer);
         _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
-        _project = _project.WithOverworldLevelPointer(next.World, nextPointer);
+        _project = _project.WithOverworldNodes(next);
         _selectedOverworldNode = nextPointer;
         _isProjectDirty = true;
         UpdateSaveState();
@@ -1599,9 +2120,98 @@ public sealed partial class MainWindow : Window
         _overworldNodeMoveStart = null;
     }
 
+    private void OverworldCanvas_NodePlacementRequested(object? sender, OverworldNodePlacementRequestedEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        if (world.World == 8)
+        {
+            RomStatusText.Text = "Warp World nodes are read-only in this vanilla pass.";
+            return;
+        }
+        if (world.LevelPointers.Any(node => node.Screen == e.Screen && node.Column == e.Column && node.Row == e.Row)) return;
+        if (_overworlds.Take(8).Sum(static map => map.LevelPointers.Count) >= _overworldNodeCapacity)
+        {
+            RomStatusText.Text = $"Vanilla map nodes are full ({_overworldNodeCapacity}/{_overworldNodeCapacity}). Remove a node from another overworld first.";
+            return;
+        }
+        var template = world.LevelPointers.FirstOrDefault();
+        OverworldLevelPointer nextPointer;
+        if (template is not null)
+        {
+            nextPointer = template with { Index = world.LevelPointers.Count, Screen = e.Screen, Column = e.Column, Row = e.Row };
+        }
+        else
+        {
+            var target = _rom!.Profile.Levels.Values
+                .OrderBy(static level => level.DisplayName, StringComparer.Ordinal)
+                .FirstOrDefault(level => TryGetMapPointers(level, out _, out _));
+            if (target is null || !TryGetMapPointers(target, out var layoutPointer, out var enemyPointer))
+            {
+                RomStatusText.Text = "No verified level destination is available for a new map node.";
+                return;
+            }
+            nextPointer = new OverworldLevelPointer(world.LevelPointers.Count, e.Screen, e.Column, e.Row,
+                target.Tileset, layoutPointer, enemyPointer, 0, 0, 0, 0);
+        }
+        var next = world with { LevelPointers = world.LevelPointers.Append(nextPointer).ToArray() };
+        _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
+        _project = _project.WithOverworldNodes(next);
+        _overworldHistory.Record(world);
+        _selectedOverworldNode = nextPointer;
+        OverworldCanvas.SelectedNodeIndex = nextPointer.Index;
+        _isProjectDirty = true;
+        UpdateSaveState();
+        RenderOverworld(next);
+        OverworldCanvas_LevelPointerSelected(this, nextPointer);
+        RomStatusText.Text = "Added a map node. Choose its destination.";
+    }
+
+    private void DeleteSelectedOverworldItem()
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        if (_selectedOverworldMapSprite is { } sprite)
+        {
+            if (sprite.IsAirshipSlot) { RomStatusText.Text = "The airship-reserved map sprite slot cannot be removed."; return; }
+            var current = world.MapSprites[sprite.Index];
+            var nextSprite = current with { Screen = 0, Column = 0, Row = OverworldDocument.FirstMapRow, Type = 0, Item = 0 };
+            var next = world.WithMapSprite(nextSprite);
+            _overworlds = _overworlds.Select(map => map.World == next.World ? next : map).ToArray();
+            _project = _project.WithOverworldMapSprite(nextSprite); _overworldHistory.Record(world); _selectedOverworldMapSprite = null;
+            OverworldContextEditor.IsVisible = false; OverworldMapSpriteEditor.IsVisible = false; _isProjectDirty = true; UpdateSaveState(); RenderOverworld(next);
+            RomStatusText.Text = "Removed the map sprite; its vanilla slot is available again.";
+            return;
+        }
+        if (_selectedOverworldNode is not null)
+        {
+            if (world.World == 8)
+            {
+                RomStatusText.Text = "Warp World nodes are read-only in this vanilla pass.";
+                return;
+            }
+            var remaining = world.LevelPointers.Where(node => node.Index != _selectedOverworldNode.Index)
+                .Select((node, index) => node with { Index = index }).ToArray();
+            var next = world with { LevelPointers = remaining };
+            _overworlds = _overworlds.Select(item => item.World == next.World ? next : item).ToArray();
+            _project = _project.WithOverworldNodes(next);
+            _overworldHistory.Record(world);
+            _selectedOverworldNode = null;
+            OverworldCanvas.SelectedNodeIndex = -1;
+            OverworldContextEditor.IsVisible = false;
+            OverworldNodeEditor.IsVisible = false;
+            _isProjectDirty = true;
+            UpdateSaveState();
+            RenderOverworld(next);
+            RomStatusText.Text = "Removed the map node. The stock node table will be rebuilt on export.";
+            return;
+        }
+        if (_selectedOverworldLock is not null)
+            RomStatusText.Text = "Lock removal is not enabled yet: the stock selector table needs one more verified audit.";
+    }
+
     private void BuildOverworldTilePicker(OverworldDocument world)
     {
         if (_rom is null) return;
+        var usedByStockOrProjectMaps = _overworlds.SelectMany(map => map.Tiles).ToHashSet();
         var entries = new List<OverworldTileEntry>(256);
         for (var index = 0; index < 256; index++)
         {
@@ -1609,7 +2219,10 @@ public sealed partial class MainWindow : Window
             if (preview.IsSuccess)
             {
                 var pixels = preview.Value!.ArgbPixels;
-                entries.Add(new OverworldTileEntry((byte)index, new CatalogPreviewData(16, 16, pixels), pixels.Distinct().Take(2).Count() == 1));
+                // A flat rendered preview is not evidence of an unused tile.
+                // `$42` is a stock map tile, so hide only values absent from
+                // all maps rather than deriving semantics from its colors.
+                entries.Add(new OverworldTileEntry((byte)index, new CatalogPreviewData(16, 16, pixels), !usedByStockOrProjectMaps.Contains((byte)index)));
             }
         }
         _overworldTileEntries = entries;
@@ -1628,8 +2241,16 @@ public sealed partial class MainWindow : Window
         var entries = _overworldTileEntries.Where(item =>
             (showBlanks || !item.IsBlank) &&
             (group is 0 or 5 || item.PaletteGroup == group)).ToArray();
-        OverworldTileGrid.ItemsSource = entries;
-        OverworldTileGrid.SelectedItem = entries.FirstOrDefault(item => item.Value == _selectedOverworldTile) ?? entries.FirstOrDefault();
+        _refreshingOverworldTilePicker = true;
+        try
+        {
+            OverworldTileGrid.ItemsSource = entries;
+            OverworldTileGrid.SelectedItem = entries.FirstOrDefault(item => item.Value == _selectedOverworldTile) ?? entries.FirstOrDefault();
+        }
+        finally
+        {
+            _refreshingOverworldTilePicker = false;
+        }
     }
 
     private void OverworldTileGrid_SelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -1637,19 +2258,71 @@ public sealed partial class MainWindow : Window
         if (OverworldTileGrid.SelectedItem is not OverworldTileEntry tile) return;
         _selectedOverworldTile = tile.Value;
         OverworldCanvas.PaintTile = tile.Value;
+        if (OverworldTerrainModeToggle.IsChecked == true)
+        {
+            _overworldTerrainWaterMode = tile.Value == OverworldTerrainBrush.WaterTile;
+            OverworldCanvas.EditTerrainWater = _overworldTerrainWaterMode;
+            RomStatusText.Text = _overworldTerrainWaterMode
+                ? "Lake brush selected: right-drag paints stock water and reshapes its shoreline."
+                : "Road brush selected: right-drag paints stock paths; click a straight alternate to switch its graphic.";
+        }
+        if (_refreshingOverworldTilePicker) return;
+        if (OverworldLockModeToggle.IsChecked == true && _selectedOverworldLock is not null)
+            ApplyLockReplacement_Click(this, new RoutedEventArgs());
+    }
+
+    private CatalogPreviewData? GetOverworldTilePreview(byte tile) =>
+        _overworldTileEntries.FirstOrDefault(entry => entry.Value == tile)?.Preview;
+
+    private void OverworldCanvas_TilePicked(object? sender, OverworldTilePickedEventArgs e)
+    {
+        if (OverworldCanvas.World is not { } world) return;
+        var tile = world.TileAt(e.X, e.Y);
+        _selectedOverworldTile = tile;
+        OverworldCanvas.PaintTile = tile;
+        var visible = OverworldTileGrid.ItemsSource as IEnumerable<OverworldTileEntry>;
+        if (visible?.FirstOrDefault(item => item.Value == tile) is { } entry) OverworldTileGrid.SelectedItem = entry;
+        RomStatusText.Text = $"Sampled map tile ${tile:X2}.";
+    }
+
+    private void OverworldCanvas_TileMoveRequested(object? sender, OverworldTileMoveRequestEventArgs e)
+    {
+        if (_project is null || OverworldCanvas.World is not { } world) return;
+        var source = world.TileAt(e.SourceX, e.SourceY);
+        var destination = world.TileAt(e.DestinationX, e.DestinationY);
+        // Map tiles have no universal, semantically blank value. Preserve the
+        // destination instead of guessing from the preview (which previously
+        // misclassified valid tile $42 as blank).
+        var next = world.WithTile(e.SourceX, e.SourceY, destination).WithTile(e.DestinationX, e.DestinationY, source);
+        if (next.Tiles.SequenceEqual(world.Tiles)) { e.Accepted = true; return; }
+        _overworlds = _overworlds.Select(item => item.World == world.World ? next : item).ToArray();
+        _project = _project.WithOverworld(next);
+        _overworldHistory.Record(world);
+        _isProjectDirty = true;
+        UpdateSaveState();
+        RenderOverworld(next);
+        RomStatusText.Text = $"Moved map tile ${source:X2}; the destination tile ${destination:X2} was preserved at the source.";
+        e.Accepted = true;
     }
 
     private void OverworldCanvas_TilePaintRequested(object? sender, IReadOnlyList<(int X, int Y)> points)
     {
         if (OverworldCanvas.World is not { } world || _project is null || points.Count == 0) return;
-        var next = world;
-        foreach (var point in points) next = next.WithTile(point.X, point.Y, OverworldCanvas.PaintTile);
+        var next = _overworldTerrainPathMode
+            ? OverworldCanvas.IsErasingTerrainStroke
+                ? _overworldTerrainWaterMode
+                    ? OverworldTerrainBrush.EraseLakeStroke(world, points)
+                    : points.Aggregate(world, (current, point) => current.WithTile(point.X, point.Y, 0x42))
+                : _overworldTerrainWaterMode
+                    ? OverworldTerrainBrush.ApplyLakeStroke(world, points)
+                    : OverworldTerrainBrush.ApplyPathStroke(world, points)
+            : points.Aggregate(world, (current, point) => current.WithTile(point.X, point.Y, OverworldCanvas.PaintTile));
         if (next.Tiles.SequenceEqual(world.Tiles)) return;
         _overworlds = _overworlds.Select(item => item.World == world.World ? next : item).ToArray();
         _project = _project.WithOverworld(next);
         _isProjectDirty = true;
         UpdateSaveState();
-        var rendered = _rom is null ? null : Smb3OverworldRenderer.Render(_rom, next, _overworldAnimationFrame);
+        var rendered = _rom is null ? null : Smb3OverworldRenderer.Render(_rom, next, _overworldAnimationFrame, EffectiveOverworldPalettes());
         if (rendered is { IsSuccess: true })
         {
             OverworldCanvas.World = next;
@@ -1724,8 +2397,19 @@ public sealed partial class MainWindow : Window
 
     private void GridToggle_Click(object? sender, RoutedEventArgs e)
     {
-        EditorCanvas.ShowGrid = GridToggle.IsChecked == true;
-        EditorCanvas.InvalidateVisual();
+        var visible = GridToggle.IsChecked == true;
+        if (OverworldToggle.IsChecked == true)
+        {
+            _overworldGridVisible = visible;
+            OverworldCanvas.ShowGrid = visible;
+            OverworldCanvas.InvalidateVisual();
+        }
+        else
+        {
+            _levelGridVisible = visible;
+            EditorCanvas.ShowGrid = visible;
+            EditorCanvas.InvalidateVisual();
+        }
     }
 
     private void EditorCanvas_ZoomRequested(object? sender, CanvasZoomRequestedEventArgs e)
@@ -1890,6 +2574,28 @@ public sealed partial class MainWindow : Window
         return result;
     }
 
+    private void EnhancedOutputMenuItem_Click(object? sender, RoutedEventArgs e)
+    {
+        if (_project is null)
+        {
+            EnhancedOutputMenuItem.IsChecked = false;
+            AddDiagnostics([Diagnostics.Warning("ENHANCED_PROJECT", "Open a verified ROM or project before choosing an output mode.")]);
+            return;
+        }
+
+        var enhanced = EnhancedOutputMenuItem.IsChecked == true;
+        _project = _project with
+        {
+            OutputMode = enhanced ? RomOutputMode.EnhancedMmc3 : RomOutputMode.Vanilla,
+            StorageMode = enhanced ? RomStorageMode.ExpandedBanks : RomStorageMode.FixedSlots
+        };
+        _isProjectDirty = true;
+        UpdateSaveState();
+        AddDiagnostics([enhanced
+            ? Diagnostics.Warning("ENHANCED_SELECTED", "Enhanced output selected. It is battery-backed and experimental; export it only for emulator testing.")
+            : Diagnostics.Info("VANILLA_SELECTED", "Vanilla output selected. Export remains byte-compatible with the stock mapper and ROM size.")]);
+    }
+
     private void Undo()
     {
         if (OverworldToggle.IsChecked == true && OverworldWorldBox.SelectedItem is OverworldDocument world && _overworldHistory.CanUndo)
@@ -1931,7 +2637,7 @@ public sealed partial class MainWindow : Window
         _project = _project.WithOverworld(world);
         _isProjectDirty = true;
         UpdateSaveState();
-        var rendered = _rom is null ? null : Smb3OverworldRenderer.Render(_rom, world, _overworldAnimationFrame);
+        var rendered = _rom is null ? null : Smb3OverworldRenderer.Render(_rom, world, _overworldAnimationFrame, EffectiveOverworldPalettes());
         if (rendered is { IsSuccess: true })
         {
             OverworldCanvas.World = world;
@@ -2116,12 +2822,15 @@ public sealed partial class MainWindow : Window
 
     private void UpdateSaveState()
     {
-        if (SaveButton is null || SaveStateText is null) return;
+        if (SaveButton is null) return;
+        if (EnhancedOutputMenuItem is not null)
+            EnhancedOutputMenuItem.IsChecked = _project?.OutputMode == RomOutputMode.EnhancedMmc3;
         SaveButton.IsEnabled = _project is not null;
-        if (UndoButton is not null) UndoButton.IsEnabled = _history.CanUndo;
-        if (RedoButton is not null) RedoButton.IsEnabled = _history.CanRedo;
-        SaveStateText.Text = _isProjectDirty ? "Unsaved changes" : "Saved";
-        SaveStateText.Foreground = _isProjectDirty ? Avalonia.Media.Brushes.Gold : Avalonia.Media.Brushes.MediumSeaGreen;
+        var overworldActive = OverworldToggle.IsChecked == true && OverworldCanvas.World is not null;
+        if (UndoButton is not null) UndoButton.IsEnabled = overworldActive ? _overworldHistory.CanUndo : _history.CanUndo;
+        if (RedoButton is not null) RedoButton.IsEnabled = overworldActive ? _overworldHistory.CanRedo : _history.CanRedo;
+        SaveDirtyBadge.IsVisible = _isProjectDirty;
+        ToolTip.SetTip(SaveButton, _isProjectDirty ? "Save project (Ctrl+S) — unsaved changes" : "Save project (Ctrl+S)");
         Title = _isProjectDirty ? "Warp Whistle *" : "Warp Whistle";
     }
 
@@ -2223,7 +2932,14 @@ public sealed partial class MainWindow : Window
             .AsEnumerable()
             .Reverse()
             .ToArray();
-        DiagnosticsList.ItemsSource = all.Select(static diagnostic => diagnostic.ToString()).ToArray();
+        DiagnosticsList.ItemsSource = all.Select(static diagnostic => new DiagnosticListItem(
+            diagnostic.ToString(),
+            diagnostic.Severity switch
+            {
+                DiagnosticSeverity.Error => new SolidColorBrush(Color.Parse("#FF6B6B")),
+                DiagnosticSeverity.Warning => new SolidColorBrush(Color.Parse("#FFD166")),
+                _ => new SolidColorBrush(Color.Parse("#C8D6E5"))
+            })).ToArray();
         var warnings = all.Count(item => item.Severity == DiagnosticSeverity.Warning);
         var errors = all.Count(item => item.Severity == DiagnosticSeverity.Error);
         DiagnosticsCountText.Text = errors > 0 ? $"({errors} error{(errors == 1 ? string.Empty : "s")})" :

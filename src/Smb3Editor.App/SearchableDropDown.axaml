@@ -1,11 +1,17 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="Smb3Editor.App.SearchableDropDown">
-  <Grid>
-    <Button x:Name="DropDownButton" HorizontalContentAlignment="Stretch" Click="DropDownButton_Click">
-      <Grid ColumnDefinitions="*,Auto">
-        <TextBlock x:Name="SelectedText" Text="Select…" TextTrimming="CharacterEllipsis" />
-        <TextBlock Grid.Column="1" Text="▾" Margin="8,0,0,0" />
+             x:Class="Smb3Editor.App.SearchableDropDown"
+             HorizontalContentAlignment="Stretch"
+             VerticalContentAlignment="Stretch">
+  <Grid HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+    <Button x:Name="DropDownButton" Background="#0D141D" BorderBrush="#718399" BorderThickness="1"
+            HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center" Click="DropDownButton_Click">
+      <Grid ColumnDefinitions="*,32">
+        <TextBlock x:Name="SelectedText" Text="Select..." TextTrimming="CharacterEllipsis" />
+        <!-- Same Fluent ComboBox down-chevron path used by Avalonia's native template. -->
+        <PathIcon Grid.Column="1" Width="12" Height="12" Margin="0,0,10,0" HorizontalAlignment="Right" VerticalAlignment="Center"
+                  Foreground="{DynamicResource ComboBoxDropDownGlyphForeground}"
+                  Data="M1939 486L2029 576L1024 1581L19 576L109 486L1024 1401L1939 486Z" />
       </Grid>
     </Button>
     <Popup x:Name="DropDownPopup" Placement="Bottom" PlacementTarget="{Binding #DropDownButton}"
@@ -13,7 +19,7 @@
       <Border Background="#172231" BorderBrush="#526174" BorderThickness="1" MinWidth="300"
               MaxHeight="390" Padding="6">
         <Grid RowDefinitions="Auto,*">
-          <TextBox x:Name="FilterBox" PlaceholderText="Filter by name or ID…" TextChanged="FilterBox_TextChanged"
+          <TextBox x:Name="FilterBox" PlaceholderText="Filter by name or ID..." TextChanged="FilterBox_TextChanged"
                    KeyDown="FilterBox_KeyDown" Margin="0,0,0,6" />
           <ListBox Grid.Row="1" x:Name="ItemsList" SelectionChanged="ItemsList_SelectionChanged"
                    PointerReleased="ItemsList_PointerReleased" KeyDown="ItemsList_KeyDown" MaxHeight="340" />

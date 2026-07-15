@@ -11,7 +11,8 @@ public sealed record OverworldDocument(
     bool ScrollEnabled,
     IReadOnlyList<byte> Tiles,
     IReadOnlyList<OverworldLevelPointer> LevelPointers,
-    IReadOnlyList<OverworldLockBridge> LocksAndBridges)
+    IReadOnlyList<OverworldLockBridge> LocksAndBridges,
+    IReadOnlyList<OverworldMapSprite> MapSprites = null!)
 {
     public const int ScreenWidth = 16;
     public const int ScreenHeight = 9;
@@ -57,6 +58,19 @@ public sealed record OverworldDocument(
         locks[index] = item;
         return this with { LocksAndBridges = locks };
     }
+
+    public OverworldDocument WithMapSprite(OverworldMapSprite item)
+    {
+        var sprites = MapSprites.ToArray();
+        if (item.Index < 0 || item.Index >= sprites.Length) return this;
+        sprites[item.Index] = item;
+        return this with { MapSprites = sprites };
+    }
+
+    public OverworldDocument WithTiles(IReadOnlyList<byte> tiles) =>
+        tiles.Count > 0 && tiles.Count % (ScreenWidth * ScreenHeight) == 0
+            ? this with { Tiles = tiles.ToArray() }
+            : this;
 }
 
 public sealed record OverworldLevelPointer(
@@ -82,12 +96,35 @@ public sealed record OverworldLockBridge(
     byte ReplacementTile,
     int PositionOffset,
     int RowOffset,
-    int ReplacementTileOffset);
+    int ReplacementTileOffset,
+    int TriggerIndex = -1);
+
+/// <summary>One of the nine vanilla map-object slots for a normal world. Slot 2 is reserved for the airship.</summary>
+public sealed record OverworldMapSprite(
+    int World,
+    int Index,
+    int Screen,
+    int Column,
+    int Row,
+    byte Type,
+    byte Item,
+    int ScreenOffset,
+    int XOffset,
+    int YOffset,
+    int TypeOffset,
+    int ItemOffset)
+{
+    public bool IsAirshipSlot => Index == 1;
+    public bool IsEmpty => Type == 0;
+}
 
 public static class Smb3OverworldParser
 {
     private const int BaseOffset = 0x10;
     private const int WorldMapBase = BaseOffset + 0xE000;
+    // Map-object tables and their pointed-to lists live in PRG11's $C000 bank,
+    // not in the PRG12 map-layout bank.
+    private const int MapObjectBase = BaseOffset + 0xC000;
     private const int WorldCount = 9;
     private const int MaxScreens = 4;
     private const int FirstValidRow = 2;
@@ -107,6 +144,12 @@ public static class Smb3OverworldParser
     private const int FortressFxPositions = 0x14866;
     private const int FortressFxReplacementTiles = 0x14877;
     private const int FortressFxWorldSlots = 0x14888;
+    private const int MapObjectYLists = 0x16020;
+    private const int MapObjectScreenLists = MapObjectYLists + (8 * 2);
+    private const int MapObjectXLists = MapObjectScreenLists + (8 * 2);
+    private const int MapObjectTypeLists = MapObjectXLists + (8 * 2);
+    private const int MapObjectItemLists = MapObjectTypeLists + (8 * 2);
+    private const int MapSpriteCount = 9;
     private static readonly int[] FortressFxCounts = [1, 1, 2, 2, 2, 3, 2, 4, 0];
 
     public static OperationResult<IReadOnlyList<OverworldDocument>> Parse(RomImage source)
@@ -222,7 +265,29 @@ public static class Smb3OverworldParser
             var packedPosition = bytes[FortressFxPositions + slot];
             locks.Add(new OverworldLockBridge(world, slot, packedPosition & 0x0F, packedPosition >> 4,
                 bytes[FortressFxRows + slot] >> 4, bytes[FortressFxReplacementTiles + slot],
-                FortressFxPositions + slot, FortressFxRows + slot, FortressFxReplacementTiles + slot));
+                FortressFxPositions + slot, FortressFxRows + slot, FortressFxReplacementTiles + slot, index));
+        }
+
+        var sprites = new List<OverworldMapSprite>(MapSpriteCount);
+        if (world < 8)
+        {
+            if (!TryGetMapSpriteList(bytes, MapObjectYLists, world, out var yList) ||
+                !TryGetMapSpriteList(bytes, MapObjectScreenLists, world, out var screenList) ||
+                !TryGetMapSpriteList(bytes, MapObjectXLists, world, out var xList) ||
+                !TryGetMapSpriteList(bytes, MapObjectTypeLists, world, out var typeList) ||
+                !TryGetMapSpriteList(bytes, MapObjectItemLists, world, out var itemList))
+            {
+                error = "map-sprite table is outside the ROM";
+                return false;
+            }
+            for (var index = 0; index < MapSpriteCount; index++)
+            {
+                var screen = bytes[screenList + index];
+                var column = bytes[xList + index] >> 4;
+                var row = bytes[yList + index] >> 4;
+                sprites.Add(new OverworldMapSprite(world, index, screen, column, row, bytes[typeList + index], bytes[itemList + index],
+                    screenList + index, xList + index, yList + index, typeList + index, itemList + index));
+            }
         }
 
         map = new OverworldDocument(
@@ -235,7 +300,8 @@ public static class Smb3OverworldParser
             (bytes[MapScroll + world] & 0x10) == 0,
             tiles,
             pointers,
-            locks);
+            locks,
+            sprites);
         return true;
     }
 
@@ -244,14 +310,68 @@ public static class Smb3OverworldParser
 
     private static bool InRange(byte[] bytes, int offset, int length) =>
         offset >= 0 && length >= 0 && offset <= bytes.Length - length;
+
+    private static bool TryGetMapSpriteList(byte[] bytes, int tableOffset, int world, out int listOffset)
+    {
+        listOffset = 0;
+        var pointerOffset = tableOffset + (world * 2);
+        if (!InRange(bytes, pointerOffset, 2)) return false;
+        listOffset = MapObjectBase + ReadU16(bytes, pointerOffset);
+        return InRange(bytes, listOffset, MapSpriteCount);
+    }
 }
 
-/// <summary>
-/// Serializes only fixed-size PRG1 overworld tile layouts. It never relocates a
-/// map, changes a terminator, or changes any pointer table.
-/// </summary>
+/// <summary>Serializes verified PRG1 overworld data within the original fixed pools.</summary>
 public static class Smb3OverworldSerializer
 {
+    /// <summary>Returns the concrete vanilla constraint violated by a map node, if any.</summary>
+    public static string? GetNodeValidationError(OverworldDocument world, OverworldLevelPointer node)
+    {
+        var positionProblems = new List<string>();
+        var destinationProblems = new List<string>();
+        if (node.Screen < 0 || node.Screen >= world.ScreenCount)
+            positionProblems.Add($"screen {node.Screen + 1} (World {world.World + 1} has screens 1-{world.ScreenCount})");
+        if (node.Column is < 0 or >= OverworldDocument.ScreenWidth)
+            positionProblems.Add($"column {node.Column + 1} (valid columns are 1-{OverworldDocument.ScreenWidth})");
+        var firstRow = OverworldDocument.FirstMapRow;
+        var lastRow = firstRow + OverworldDocument.ScreenHeight - 1;
+        if (node.Row < firstRow || node.Row > lastRow)
+            positionProblems.Add($"row {node.Row + 1} (valid rows are {firstRow + 1}-{lastRow + 1})");
+        if (node.ObjectSet is < 0 or > 0x0F)
+            destinationProblems.Add($"object set {node.ObjectSet} (valid sets are 0-15)");
+        // These are raw overworld-table values, not generic CPU addresses. PRG1
+        // legitimately uses values such as $0700 and $0000/$0001 for map entries.
+        // Their validity depends on the game's bank-selection path, so rejecting
+        // them by a fixed $A000/$C000 range incorrectly rejects an untouched ROM.
+
+        if (positionProblems.Count == 0 && destinationProblems.Count == 0) return null;
+        var repairs = new List<string>();
+        if (positionProblems.Count > 0)
+            repairs.Add($"Map position is outside World {world.World + 1}: {string.Join(", ", positionProblems)}. Drag the red node onto the map.");
+        if (destinationProblems.Count > 0)
+            repairs.Add($"Destination object set is not usable: {string.Join(", ", destinationProblems)}. Switch to Nodes, click the red node, then choose its destination again.");
+        return string.Join(" ", repairs);
+    }
+
+    private const int WorldMapBase = 0xE010;
+    private const int StructureOffsets = 0x193DA;
+    private const int YPositionLists = 0x193EC;
+    private const int XPositionLists = 0x193FE;
+    private const int EnemyOffsetLists = 0x19410;
+    private const int LevelOffsetLists = 0x19422;
+    private const int LayoutList = 0x185A8;
+    private const int LayoutPoolStart = 0x185BA;
+    // PRG12 labels the first byte after World 9's $FF terminator as $B0F3.
+    // It is unrelated map code/data and must never be consumed by map layouts.
+    private const int LayoutPoolEndExclusive = 0x19103;
+    private const int ScreenBytes = OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight;
+    private const int MapObjectYLists = 0x16020;
+    private const int MapObjectScreenLists = MapObjectYLists + (8 * 2);
+    private const int MapObjectXLists = MapObjectScreenLists + (8 * 2);
+    private const int MapObjectTypeLists = MapObjectXLists + (8 * 2);
+    private const int MapObjectItemLists = MapObjectTypeLists + (8 * 2);
+    private const int MapSpriteCount = 9;
+
     public static IReadOnlyList<Diagnostic> ApplyTileOverrides(
         ProjectDocumentV2 project,
         RomImage source,
@@ -267,32 +387,50 @@ public static class Smb3OverworldSerializer
         var parsed = Smb3OverworldParser.Parse(source);
         if (!parsed.IsSuccess) return parsed.Diagnostics;
 
-        var maps = parsed.Value!.ToDictionary(static map => map.World);
+        var sourceMaps = parsed.Value!.OrderBy(static map => map.World).ToArray();
+        var maps = sourceMaps.ToDictionary(static map => map.World);
         var diagnostics = new List<Diagnostic>();
-        foreach (var overrideTiles in project.OverworldTiles.OrderBy(static item => item.World))
+        if (project.OverworldTiles.GroupBy(static item => item.World).Any(static group => group.Count() != 1))
+            return [Diagnostics.Error("BUILD_OVERWORLD_WORLD", "The project contains more than one tile layout for an overworld.")];
+
+        var requested = project.OverworldTiles.ToDictionary(static item => item.World);
+        var effective = new IReadOnlyList<byte>[sourceMaps.Length];
+        for (var world = 0; world < sourceMaps.Length; world++)
         {
-            if (!maps.TryGetValue(overrideTiles.World, out var map))
+            var map = sourceMaps[world];
+            var tiles = requested.TryGetValue(world, out var overrideTiles) ? overrideTiles.Tiles : map.Tiles;
+            if (tiles.Count == 0 || tiles.Count % ScreenBytes != 0 || tiles.Count / ScreenBytes > 4)
             {
-                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_WORLD", $"Overworld {overrideTiles.World + 1} is not present in the verified PRG1 map set."));
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_SIZE", $"World {world + 1} must contain 1-4 complete 16x9 map screens."));
                 continue;
             }
+            effective[world] = tiles;
+        }
+        if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error)) return diagnostics;
 
-            if (overrideTiles.Tiles.Count != map.Tiles.Count)
+        var required = effective.Sum(static tiles => tiles.Count + 1);
+        var capacity = LayoutPoolEndExclusive - LayoutPoolStart;
+        if (required > capacity)
+            return [Diagnostics.Error("BUILD_OVERWORLD_CAPACITY", $"Overworld layouts need {required} bytes, but the verified vanilla layout pool holds {capacity}. Remove a map screen from another world before adding one.")];
+
+        // All nine layout streams are rebuilt together inside their verified
+        // contiguous PRG12 pool. This permits screen transfer between worlds,
+        // but never grows the ROM or overwrites the following $B0F3 table.
+        var cursor = LayoutPoolStart;
+        for (var world = 0; world < effective.Length; world++)
+        {
+            var tiles = effective[world];
+            if (cursor + tiles.Count + 1 > LayoutPoolEndExclusive)
             {
-                diagnostics.Add(Diagnostics.Error(
-                    "BUILD_OVERWORLD_SIZE",
-                    $"World {map.World + 1} has {overrideTiles.Tiles.Count} tiles, but its fixed vanilla slot requires {map.Tiles.Count}."));
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_CAPACITY", "The rebuilt overworld layouts would exceed their verified stock pool."));
                 continue;
             }
-
-            if (map.LayoutOffset < 0 || map.LayoutOffset > output.Length - map.Tiles.Count - 1 || output[map.LayoutOffset + map.Tiles.Count] != 0xFF)
-            {
-                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_RANGE", $"World {map.World + 1}'s verified tile slot is no longer safe to write."));
-                continue;
-            }
-
-            overrideTiles.Tiles.ToArray().CopyTo(output, map.LayoutOffset);
-            diagnostics.Add(Diagnostics.Info("BUILD_OVERWORLD_OK", $"Compiled World {map.World + 1}: {map.Tiles.Count} fixed-size overworld tiles."));
+            WriteU16(output, LayoutList + (world * 2), (ushort)(cursor - WorldMapBase));
+            tiles.ToArray().CopyTo(output, cursor);
+            output[cursor + tiles.Count] = 0xFF;
+            cursor += tiles.Count + 1;
+            if (requested.ContainsKey(world))
+                diagnostics.Add(Diagnostics.Info("BUILD_OVERWORLD_OK", $"Compiled World {world + 1}: {tiles.Count / ScreenBytes} vanilla map screen(s)."));
         }
 
         if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error)) return diagnostics;
@@ -321,23 +459,25 @@ public static class Smb3OverworldSerializer
             return [Diagnostics.Error("BUILD_OVERWORLD_PROFILE", "Overworld node export currently supports verified US PRG1 ROMs only.")];
         }
 
-        var parsed = Smb3OverworldParser.Parse(source);
+        var parsed = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
         if (!parsed.IsSuccess) return parsed.Diagnostics;
         var maps = parsed.Value!.ToDictionary(static map => map.World);
+        var rebuiltWorlds = (project.OverworldNodeSets ?? []).Select(static item => item.World).ToHashSet();
         var diagnostics = new List<Diagnostic>();
         foreach (var change in project.OverworldLevelPointers.OrderBy(static item => item.World).ThenBy(static item => item.Index))
         {
+            if (rebuiltWorlds.Contains(change.World)) continue;
             if (!maps.TryGetValue(change.World, out var world) || change.Index < 0 || change.Index >= world.LevelPointers.Count)
             {
                 diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_NODE", $"World {change.World + 1} map node {change.Index + 1} is not present in the verified PRG1 map data."));
                 continue;
             }
 
-            if (change.Screen < 0 || change.Screen >= world.ScreenCount || change.Column is < 0 or >= OverworldDocument.ScreenWidth ||
-                change.Row is < OverworldDocument.FirstMapRow or >= OverworldDocument.FirstMapRow + OverworldDocument.ScreenHeight || change.ObjectSet is < 0 or > 0x0F ||
-                change.LevelOffset is < 0xA000 or > 0xBFFF || change.EnemyOffset is < 0xC000 or > 0xDFFF)
+            var candidate = new OverworldLevelPointer(change.Index, change.Screen, change.Column, change.Row,
+                change.ObjectSet, change.LevelOffset, change.EnemyOffset, 0, 0, 0, 0);
+            if (GetNodeValidationError(world, candidate) is { } problem)
             {
-                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_NODE_RANGE", $"World {world.World + 1} map node {change.Index + 1} has an invalid vanilla position or destination."));
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_NODE_RANGE", $"World {world.World + 1} map node {change.Index + 1} is invalid: {problem}."));
                 continue;
             }
 
@@ -360,6 +500,95 @@ public static class Smb3OverworldSerializer
         return diagnostics;
     }
 
+    /// <summary>
+    /// Rebuilds the stock map-entry structure blocks for Worlds 1–8. Their
+    /// original blocks form one verified contiguous pool; no ROM space grows
+    /// and World 9's special structure remains untouched.
+    /// </summary>
+    public static IReadOnlyList<Diagnostic> ApplyNodeSetOverrides(
+        ProjectDocumentV2 project,
+        RomImage source,
+        byte[] output)
+    {
+        if (project.OverworldNodeSets is not { Count: > 0 }) return [];
+        if (!string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal))
+            return [Diagnostics.Error("BUILD_OVERWORLD_PROFILE", "Overworld node editing currently supports verified US PRG1 ROMs only.")];
+
+        var parsed = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
+        if (!parsed.IsSuccess) return parsed.Diagnostics;
+        var maps = parsed.Value!.OrderBy(static map => map.World).ToArray();
+        var requested = project.OverworldNodeSets.GroupBy(static item => item.World).ToArray();
+        if (requested.Any(static group => group.Count() != 1))
+            return [Diagnostics.Error("BUILD_OVERWORLD_NODE_SET", "The project contains more than one node set for an overworld.")];
+        if (requested.Any(static group => group.Key is < 0 or > 7))
+            return [Diagnostics.Error("BUILD_OVERWORLD_NODE_SET", "Vanilla node add/remove is currently verified for Worlds 1–8 only; Warp World remains read-only.")];
+
+        var sets = requested.ToDictionary(static group => group.Key, static group => group.Single().Nodes);
+        var effective = new List<OverworldNodeOverride>[8];
+        for (var world = 0; world < 8; world++)
+        {
+            var map = maps[world];
+            effective[world] = (sets.TryGetValue(world, out var replacement) ? replacement : map.LevelPointers
+                    .Select(static node => new OverworldNodeOverride(node.Screen, node.Column, node.Row, node.ObjectSet, node.LevelOffset, node.EnemyOffset)))
+                .OrderBy(static node => node.Screen).ThenBy(static node => node.Row).ThenBy(static node => node.Column).ToList();
+            var seen = new HashSet<(int Screen, int Column, int Row)>();
+            foreach (var node in effective[world])
+            {
+                if (node.Screen < 0 || node.Screen >= map.ScreenCount || node.Column is < 0 or >= OverworldDocument.ScreenWidth ||
+                    node.Row is < OverworldDocument.FirstMapRow or >= OverworldDocument.FirstMapRow + OverworldDocument.ScreenHeight ||
+                    node.ObjectSet is < 0 or > 0x0F ||
+                    !seen.Add((node.Screen, node.Column, node.Row)))
+                {
+                    return [Diagnostics.Error("BUILD_OVERWORLD_NODE_RANGE", $"World {world + 1} has an invalid or duplicate vanilla map node.")];
+                }
+            }
+        }
+
+        var poolStart = maps[0].LevelPointers[0].PositionYOffset - 4;
+        var poolEnd = maps[8].LevelPointers[0].PositionYOffset - 4;
+        if (poolStart < 0 || poolEnd <= poolStart || poolEnd > output.Length)
+            return [Diagnostics.Error("BUILD_OVERWORLD_NODE_POOL", "The verified vanilla node-table pool is unavailable.")];
+        var required = effective.Sum(static nodes => 4 + (nodes.Count * 6));
+        if (required > poolEnd - poolStart)
+            return [Diagnostics.Error("BUILD_OVERWORLD_NODE_CAPACITY", $"Vanilla map nodes need {required} bytes, but the verified stock pool holds {poolEnd - poolStart}. Remove a node from another overworld or use Enhanced mode when available.")];
+
+        var cursor = poolStart;
+        for (var world = 0; world < 8; world++)
+        {
+            var nodes = effective[world];
+            var starts = new byte[4];
+            var index = 0;
+            for (var screen = 0; screen < starts.Length; screen++)
+            {
+                starts[screen] = (byte)index;
+                while (index < nodes.Count && nodes[index].Screen == screen) index++;
+            }
+            starts.CopyTo(output.AsSpan(cursor, 4));
+            var yOffset = cursor + 4;
+            var xOffset = yOffset + nodes.Count;
+            var enemyOffset = xOffset + nodes.Count;
+            var layoutOffset = enemyOffset + (nodes.Count * 2);
+            for (var node = 0; node < nodes.Count; node++)
+            {
+                output[yOffset + node] = (byte)((nodes[node].Row << 4) | nodes[node].ObjectSet);
+                output[xOffset + node] = (byte)((nodes[node].Screen << 4) | nodes[node].Column);
+                WriteU16(output, enemyOffset + (node * 2), nodes[node].EnemyOffset);
+                WriteU16(output, layoutOffset + (node * 2), nodes[node].LevelOffset);
+            }
+            WriteU16(output, StructureOffsets + (world * 2), (ushort)(cursor - WorldMapBase));
+            WriteU16(output, YPositionLists + (world * 2), (ushort)(yOffset - WorldMapBase));
+            WriteU16(output, XPositionLists + (world * 2), (ushort)(xOffset - WorldMapBase));
+            WriteU16(output, EnemyOffsetLists + (world * 2), (ushort)(enemyOffset - WorldMapBase));
+            WriteU16(output, LevelOffsetLists + (world * 2), (ushort)(layoutOffset - WorldMapBase));
+            cursor = layoutOffset + (nodes.Count * 2);
+        }
+
+        var verified = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
+        if (!verified.IsSuccess)
+            return verified.Diagnostics.Select(static item => Diagnostics.Error("BUILD_OVERWORLD_NODE_VERIFY", $"Compiled node verification failed: {item.Message}")).ToArray();
+        return [Diagnostics.Info("BUILD_OVERWORLD_NODE_OK", $"Compiled {effective.Sum(static nodes => nodes.Count)} vanilla map nodes in the stock {poolEnd - poolStart}-byte pool.")];
+    }
+
     public static IReadOnlyList<Diagnostic> ApplyLockBridgeOverrides(
         ProjectDocumentV2 project,
         RomImage source,
@@ -369,7 +598,7 @@ public static class Smb3OverworldSerializer
         if (!string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal))
             return [Diagnostics.Error("BUILD_OVERWORLD_PROFILE", "Overworld lock and bridge export currently supports verified US PRG1 ROMs only.")];
 
-        var parsed = Smb3OverworldParser.Parse(source);
+        var parsed = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
         if (!parsed.IsSuccess) return parsed.Diagnostics;
         var worlds = parsed.Value!.ToDictionary(static world => world.World);
         var diagnostics = new List<Diagnostic>();
@@ -433,9 +662,59 @@ public static class Smb3OverworldSerializer
         return diagnostics;
     }
 
+    public static IReadOnlyList<Diagnostic> ApplyMapSpriteOverrides(ProjectDocumentV2 project, RomImage source, byte[] output)
+    {
+        if (project.OverworldMapSprites is not { Count: > 0 }) return [];
+        if (!string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal))
+            return [Diagnostics.Error("BUILD_OVERWORLD_PROFILE", "Overworld map sprites currently support verified US PRG1 ROMs only.")];
+
+        var parsed = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
+        if (!parsed.IsSuccess) return parsed.Diagnostics;
+        var worlds = parsed.Value!.ToDictionary(static world => world.World);
+        var diagnostics = new List<Diagnostic>();
+        foreach (var change in project.OverworldMapSprites.OrderBy(static item => item.World).ThenBy(static item => item.Index))
+        {
+            if (!worlds.TryGetValue(change.World, out var world) || change.World is < 0 or > 7 || change.Index is < 0 or >= MapSpriteCount)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_SPRITE", "The requested map sprite slot is not present in the verified PRG1 data."));
+                continue;
+            }
+            if (change.Index == 1)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_SPRITE_AIRSHIP", "Map sprite slot 2 is reserved for the stock airship and cannot be edited."));
+                continue;
+            }
+            if (change.Screen < 0 || change.Screen >= world.ScreenCount || change.Column is < 0 or >= OverworldDocument.ScreenWidth ||
+                change.Row is < OverworldDocument.FirstMapRow or >= OverworldDocument.FirstMapRow + OverworldDocument.ScreenHeight)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_SPRITE_RANGE", $"World {change.World + 1} map sprite {change.Index + 1} has an invalid map position."));
+                continue;
+            }
+            var sprites = world.MapSprites;
+            if (sprites.Count != MapSpriteCount)
+            {
+                diagnostics.Add(Diagnostics.Error("BUILD_OVERWORLD_SPRITE", "The verified map-sprite table is unavailable."));
+                continue;
+            }
+            var original = sprites[change.Index];
+            output[original.ScreenOffset] = (byte)change.Screen;
+            output[original.XOffset] = (byte)((change.Column << 4) | (output[original.XOffset] & 0x0F));
+            output[original.YOffset] = (byte)((change.Row << 4) | (output[original.YOffset] & 0x0F));
+            output[original.TypeOffset] = change.Type;
+            output[original.ItemOffset] = change.Item;
+            diagnostics.Add(Diagnostics.Info("BUILD_OVERWORLD_SPRITE_OK", $"Compiled World {change.World + 1} map sprite {change.Index + 1}."));
+        }
+        if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error)) return diagnostics;
+        var verified = Smb3OverworldParser.Parse(RomImage.CreateForTesting(source.SourcePath, output, source.Profile));
+        if (!verified.IsSuccess)
+            diagnostics.AddRange(verified.Diagnostics.Select(static item => Diagnostics.Error("BUILD_OVERWORLD_SPRITE_VERIFY", $"Compiled map-sprite verification failed: {item.Message}")));
+        return diagnostics;
+    }
+
     private static void WriteU16(byte[] bytes, int offset, ushort value)
     {
         bytes[offset] = (byte)value;
         bytes[offset + 1] = (byte)(value >> 8);
     }
+
 }

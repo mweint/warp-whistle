@@ -22,7 +22,7 @@
       <Setter Property="Background" Value="#8A5A12" />
     </Style>
   </Window.Styles>
-  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
     <Border Grid.Row="0" Background="#172231" Padding="6,2">
       <StackPanel Orientation="Horizontal" Spacing="4">
       <Menu>
@@ -34,6 +34,9 @@
           <MenuItem x:Name="OpenTraceLogsMenuItem" Header="Open Trace Logs" Click="OpenTraceLogs_Click" />
           <MenuItem Header="Open Legacy Preview Cache" Click="OpenLegacyPreviewCache_Click" />
           <Separator />
+          <MenuItem x:Name="EnhancedOutputMenuItem" Header="Enhanced output (experimental)" ToggleType="CheckBox"
+                    Click="EnhancedOutputMenuItem_Click"
+                    ToolTip.Tip="Creates a battery-backed 512 KiB MMC3 ROM. Vanilla output remains the default." />
           <MenuItem Header="Export ROM" Click="ExportRom_Click" />
           <MenuItem Header="Export BPS" Click="ExportBps_Click" />
         </MenuItem>
@@ -45,19 +48,20 @@
           <MenuItem Header="Paste" Click="Paste_Click" />
           <MenuItem Header="Delete" Click="Delete_Click" />
         </MenuItem>
+        <MenuItem Header="Help">
+          <MenuItem Header="Keyboard shortcuts" Click="OpenKeyboardShortcuts_Click" />
+        </MenuItem>
       </Menu>
-      <Button Content="Patches" Click="OpenPatchManager_Click" Padding="10,3" VerticalAlignment="Center" />
+      <Button Content="Patches" Height="32" Click="OpenPatchManager_Click" Padding="10,0" HorizontalContentAlignment="Center" VerticalAlignment="Center" VerticalContentAlignment="Center" />
+      <ToggleButton x:Name="OverworldToggle" Content="Overworld" Width="82" Height="32" Click="OverworldToggle_Click" HorizontalAlignment="Center" VerticalAlignment="Center" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
       </StackPanel>
     </Border>
 
     <Border Grid.Row="1" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,0,0,1" Padding="10,7">
       <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
-        <TextBlock x:Name="LevelLabel" Text="Level" VerticalAlignment="Center" Foreground="#9FB0C4" />
-        <local:SearchableDropDown x:Name="LevelList" Width="220" SelectionChanged="LevelList_SelectionChanged" />
-        <ToggleButton x:Name="OverworldToggle" Content="Overworld" Click="OverworldToggle_Click" />
-        <ComboBox x:Name="OverworldWorldBox" Width="105" IsVisible="False" SelectionChanged="OverworldWorldBox_SelectionChanged" />
-        <ComboBox x:Name="OverworldScreenBox" Width="112" IsVisible="False" SelectionChanged="OverworldScreenBox_SelectionChanged" />
-        <ToggleButton x:Name="OverworldAnimationToggle" Content="Animate" IsVisible="False" Click="OverworldAnimationToggle_Click" ToolTip.Tip="Animate overworld tiles" />
+        <TextBlock x:Name="LevelLabel" Text="Level" Width="36" VerticalAlignment="Center" Foreground="#9FB0C4" />
+        <local:SearchableDropDown x:Name="LevelList" Width="220" Height="32" SelectionChanged="LevelList_SelectionChanged" />
+        <ComboBox x:Name="OverworldWorldBox" Width="220" Height="32" Background="#0D141D" BorderBrush="#718399" BorderThickness="1" IsVisible="False" SelectionChanged="OverworldWorldBox_SelectionChanged" />
         <SplitButton x:Name="PlayButton" Content="Play ROM" Click="PlayButton_Click">
           <SplitButton.Flyout>
             <MenuFlyout Placement="Bottom">
@@ -67,12 +71,14 @@
         </SplitButton>
         <ToggleButton x:Name="TracePlayLevelToggle" Content="Trace" ToolTip.Tip="Launch the selected play mode with its bundled Mesen trace" />
         <ToggleButton x:Name="GridToggle" Content="Grid" IsChecked="True" Click="GridToggle_Click" />
-        <Button x:Name="ClearLevelButton" Content="Clear level" Click="ClearLevel_Click" />
         <Button x:Name="UndoButton" Content="↶" Width="32" Click="Undo_Click" ToolTip.Tip="Undo (Ctrl+Z)" />
         <Button x:Name="RedoButton" Content="↷" Width="32" Click="Redo_Click" ToolTip.Tip="Redo (Ctrl+Y)" />
-        <Button x:Name="SaveButton" Content="💾" Width="34" Click="SaveProject_Click" ToolTip.Tip="Save project (Ctrl+S)" />
-        <TextBlock x:Name="SaveStateText" Text="Saved" VerticalAlignment="Center" Foreground="#8FA0B5" FontSize="12" />
-        <TextBlock Text="Ctrl + wheel: zoom" VerticalAlignment="Center" Foreground="#718399" Margin="8,0,0,0" />
+        <Button x:Name="SaveButton" Width="34" Click="SaveProject_Click" ToolTip.Tip="Save project (Ctrl+S)">
+          <Grid>
+            <TextBlock Text="💾" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            <Ellipse x:Name="SaveDirtyBadge" Width="7" Height="7" Fill="#F2B632" Stroke="#111B28" StrokeThickness="1" HorizontalAlignment="Right" VerticalAlignment="Top" IsVisible="False" />
+          </Grid>
+        </Button>
         <!-- This fixed slot keeps feedback in the app chrome without moving the canvas. -->
         <Border Width="360" Height="30" VerticalAlignment="Center" Margin="8,0,0,0">
           <StackPanel Orientation="Horizontal" Spacing="5">
@@ -96,7 +102,33 @@
       </StackPanel>
     </Border>
 
-    <SplitView Grid.Row="2"
+    <Border x:Name="OverworldMapBar" Grid.Row="2" IsVisible="False" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,0,0,1" Padding="10,5">
+      <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Spacing="8">
+        <TextBlock Text="Map" VerticalAlignment="Center" Foreground="#9FB0C4" />
+        <ComboBox x:Name="OverworldScreenBox" Width="112" SelectionChanged="OverworldScreenBox_SelectionChanged" />
+        <ToggleButton x:Name="OverworldAnimationToggle" Content="Animate" Click="OverworldAnimationToggle_Click" ToolTip.Tip="Animate overworld tiles" />
+        <Button x:Name="OverworldPalettesButton" Content="Palettes" Click="OpenOverworldPaletteEditor_Click" />
+        <SplitButton x:Name="OverworldOverlaysButton" Content="Overlays">
+          <SplitButton.Flyout><MenuFlyout Placement="Bottom">
+            <MenuItem Header="Show all" Click="OverworldShowAllOverlays_Click" />
+            <MenuItem Header="Hide all" Click="OverworldHideAllOverlays_Click" />
+            <Separator />
+            <MenuItem x:Name="OverworldShowEntrancesMenuItem" Header="Entrances" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
+            <MenuItem x:Name="OverworldShowLocksMenuItem" Header="Locks / bridges" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
+            <MenuItem x:Name="OverworldShowSpritesMenuItem" Header="Sprites" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
+          </MenuFlyout></SplitButton.Flyout>
+        </SplitButton>
+        <TextBlock x:Name="OverworldPageSummary" VerticalAlignment="Center" Foreground="#9FB0C4" Margin="12,0,0,0" />
+        <SplitButton Content="Pages">
+          <SplitButton.Flyout><MenuFlyout Placement="Bottom">
+            <MenuItem Header="Add page" Click="OverworldAddScreen_Click" />
+            <MenuItem Header="Remove last page" Click="OverworldRemoveScreen_Click" />
+          </MenuFlyout></SplitButton.Flyout>
+        </SplitButton>
+      </StackPanel>
+    </Border>
+
+    <SplitView Grid.Row="3"
                x:Name="WorkspaceSplitView"
                DisplayMode="Inline"
                PanePlacement="Right"
@@ -230,30 +262,50 @@
         <Border x:Name="OverworldTilePicker" IsVisible="False" Background="#111923" Padding="8">
           <Grid RowDefinitions="Auto,Auto,Auto,*" RowSpacing="8">
             <StackPanel>
-              <TextBlock Classes="section" Text="Map tiles" />
-              <TextBlock Text="Select a tile, then click or drag the map to paint. Color sets are the four 4-color sets used by map tiles, not separate map palettes." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
-              <StackPanel Orientation="Horizontal" Spacing="4" Margin="0,5,0,0">
-                <ToggleButton x:Name="OverworldPaintModeToggle" Content="Paint" IsChecked="True" Click="OverworldPaintMode_Click" />
-                <ToggleButton x:Name="OverworldNodeModeToggle" Content="Nodes" Click="OverworldNodeMode_Click" />
+              <TextBlock x:Name="OverworldPickerTitle" Classes="section" Text="Map tiles" />
+                <TextBlock x:Name="OverworldPickerHelp" Height="34" Text="Drag a tile to relocate it. Left-click selects; right-click places the selected tile." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+              <WrapPanel Orientation="Horizontal" ItemHeight="32" Margin="0,5,0,0">
+                <ToggleButton x:Name="OverworldPaintModeToggle" Content="Tiles" IsChecked="True" Click="OverworldPaintMode_Click" ToolTip.Tip="Drag a tile to relocate it; the destination tile moves to the source." />
+                <ToggleButton x:Name="OverworldTerrainModeToggle" Content="Terrain" Click="OverworldTerrainMode_Click" ToolTip.Tip="Paints verified stock road tiles; this first pass supports straight roads." />
+                <ToggleButton x:Name="OverworldMapSpriteModeToggle" Content="Sprites" Click="OverworldMapSpriteMode_Click" />
+                <Separator Width="12" />
+                <ToggleButton x:Name="OverworldNodeModeToggle" Content="Entrances" Click="OverworldNodeMode_Click" />
                 <ToggleButton x:Name="OverworldLockModeToggle" Content="Locks" Click="OverworldLockMode_Click" />
-                <Button Content="Palettes" Click="OpenOverworldPaletteEditor_Click" />
-              </StackPanel>
+              </WrapPanel>
+              <TextBlock x:Name="OverworldNodeProblemsText" IsVisible="False" Foreground="#FF6B6B" TextWrapping="Wrap" FontSize="12" Margin="0,5,0,0" />
             </StackPanel>
-            <Border Grid.Row="1" Height="84" Background="#172231" BorderBrush="#31445A" BorderThickness="1" Padding="8">
+            <Border x:Name="OverworldContextEditor" Grid.Row="1" IsVisible="False" MinHeight="84" Background="#172231" BorderBrush="#31445A" BorderThickness="1" Padding="8">
               <Grid>
                 <StackPanel x:Name="OverworldNodeEditor" IsVisible="False" Spacing="5">
                   <TextBlock x:Name="OverworldNodeTitle" FontWeight="SemiBold" />
                   <TextBlock Text="Destination" Foreground="#9FB0C4" FontSize="12" />
                   <local:SearchableDropDown x:Name="OverworldNodeLevelList" SelectionChanged="OverworldNodeLevelList_SelectionChanged" />
                 </StackPanel>
+                <StackPanel x:Name="OverworldNodeHelpEditor" IsVisible="False" Spacing="5">
+                  <TextBlock Text="Entrances" FontWeight="SemiBold" />
+                  <TextBlock Text="Add: click an empty map tile.&#x0a;Select: click an outlined entrance.&#x0a;Move: drag its outline.&#x0a;Delete: select it and press Delete.&#x0a;Destination: select an entrance, then use its destination selector." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                </StackPanel>
                 <StackPanel x:Name="OverworldLockEditor" IsVisible="False" Spacing="5">
                   <TextBlock x:Name="OverworldLockTitle" FontWeight="SemiBold" />
-                  <TextBlock Text="Select a map tile, then apply it as the post-fortress replacement." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
-                  <Button Content="Use selected tile" Click="ApplyLockReplacement_Click" HorizontalAlignment="Left" />
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Border Width="34" Height="34" Background="#101820" BorderBrush="#526174" BorderThickness="1"><local:CatalogPreview x:Name="OverworldLockSourcePreview" /></Border>
+                    <TextBlock Text="→" VerticalAlignment="Center" Foreground="#9FB0C4" FontSize="18" />
+                    <Border Width="34" Height="34" Background="#101820" BorderBrush="#526174" BorderThickness="1"><local:CatalogPreview x:Name="OverworldLockReplacementPreview" /></Border>
+                  </StackPanel>
+                  <TextBlock x:Name="OverworldLockTriggerText" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                  <TextBlock x:Name="OverworldLockReplacementText" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                </StackPanel>
+                <StackPanel x:Name="OverworldLockHelpEditor" IsVisible="False" Spacing="5">
+                  <TextBlock Text="Locks / bridges" FontWeight="SemiBold" />
+                  <TextBlock Text="Select: click an orange outline.&#x0a;Move: drag its outline.&#x0a;Each effect is tied to a fortress trigger. Select one to inspect its source and post-clear tile." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                </StackPanel>
+                <StackPanel x:Name="OverworldMapSpriteEditor" IsVisible="False" Spacing="5">
+                  <TextBlock x:Name="OverworldMapSpriteTitle" FontWeight="SemiBold" />
+                  <ComboBox x:Name="OverworldMapSpriteItemBox" SelectionChanged="OverworldMapSpriteItemBox_SelectionChanged" />
                 </StackPanel>
               </Grid>
             </Border>
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="6">
+            <StackPanel x:Name="OverworldTileFilters" Grid.Row="2" Orientation="Horizontal" Spacing="6">
               <ComboBox x:Name="OverworldTileGroupBox" Width="145" SelectedIndex="0" SelectionChanged="OverworldTileFilter_Changed">
                 <ComboBoxItem Content="All visible tiles" />
                 <ComboBoxItem Content="Color set 1 (1–4)" />
@@ -264,7 +316,8 @@
               </ComboBox>
               <ToggleButton x:Name="OverworldShowBlankTilesToggle" Content="Show blanks" Click="OverworldTileFilter_Changed" />
             </StackPanel>
-            <ScrollViewer Grid.Row="3">
+            <TextBlock x:Name="OverworldModeHint" Grid.Row="3" IsVisible="False" TextWrapping="Wrap" Foreground="#9FB0C4" Margin="2,4" />
+            <ScrollViewer x:Name="OverworldPickerScroll" Grid.Row="3"><Grid>
               <ListBox x:Name="OverworldTileGrid" SelectionChanged="OverworldTileGrid_SelectionChanged" Padding="0">
                 <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
                 <ListBox.Styles>
@@ -277,7 +330,19 @@
                   </Border>
                 </DataTemplate></ListBox.ItemTemplate>
               </ListBox>
-            </ScrollViewer>
+              <ListBox x:Name="OverworldMapSpriteGrid" IsVisible="False" SelectionChanged="OverworldMapSpriteGrid_SelectionChanged" Padding="0">
+                <ListBox.ItemsPanel><ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate></ListBox.ItemsPanel>
+                <ListBox.Styles>
+                  <Style Selector="ListBoxItem"><Setter Property="Padding" Value="1" /><Setter Property="Margin" Value="0" /><Setter Property="BorderThickness" Value="0" /></Style>
+                  <Style Selector="ListBoxItem:selected"><Setter Property="Background" Value="#3478A5" /></Style>
+                </ListBox.Styles>
+                <ListBox.ItemTemplate><DataTemplate>
+                  <Border Width="50" Height="50" Background="#171A1F" BorderBrush="#30353D" BorderThickness="1" ToolTip.Tip="{Binding ToolTip}">
+                    <local:CatalogPreview Preview="{Binding Preview}" />
+                  </Border>
+                </DataTemplate></ListBox.ItemTemplate>
+              </ListBox>
+            </Grid></ScrollViewer>
           </Grid>
         </Border>
         </Grid>
@@ -303,24 +368,24 @@
       </Border>
     </SplitView>
 
-    <Border Grid.Row="3" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,1,0,0" Padding="10,6">
+    <Border Grid.Row="4" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,1,0,0" Padding="10,6">
       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <TextBlock x:Name="RomStatusText" Text="No ROM loaded" TextWrapping="Wrap" Foreground="#9FB0C4" />
         <TextBlock x:Name="ByteBudgetText" Grid.Column="1" VerticalAlignment="Center" Foreground="#9FB0C4" />
       </Grid>
     </Border>
 
-    <Expander x:Name="DiagnosticsPanel" Grid.Row="4" IsExpanded="False" Background="#101720" MaxHeight="180">
+    <Expander x:Name="DiagnosticsPanel" Grid.Row="5" IsExpanded="False" Background="#101720" MaxHeight="180">
       <Expander.Header>
         <StackPanel Orientation="Horizontal" Spacing="6">
           <TextBlock Text="Diagnostics" />
           <TextBlock x:Name="DiagnosticsCountText" Foreground="#9FB0C4" />
         </StackPanel>
       </Expander.Header>
-      <ListBox x:Name="DiagnosticsList" Height="150" MaxWidth="900" HorizontalAlignment="Left" ScrollViewer.VerticalScrollBarVisibility="Auto">
+      <ListBox x:Name="DiagnosticsList" Height="150" MaxWidth="900" HorizontalAlignment="Left" ScrollViewer.VerticalScrollBarVisibility="Visible" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
         <ListBox.ItemTemplate>
           <DataTemplate>
-            <TextBlock Text="{Binding}" TextWrapping="Wrap" MaxWidth="860" Margin="3,2" />
+            <TextBlock Text="{Binding Text}" Foreground="{Binding Foreground}" TextWrapping="Wrap" MaxWidth="860" Margin="3,2" />
           </DataTemplate>
         </ListBox.ItemTemplate>
       </ListBox>

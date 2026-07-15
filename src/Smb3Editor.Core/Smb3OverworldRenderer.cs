@@ -14,6 +14,16 @@ public static class Smb3OverworldRenderer
     // pattern values address that composed 256-tile view directly.
     private static readonly int[] AnimatedChrPages = [0x14, 0x70, 0x72, 0x74];
     private const int StaticChrPage = 0x16;
+    // PRG11 MapObject_Pat1/Pat2, first animated frame. Each value is the
+    // first tile of an 8x16 NES sprite; the pair composes a 16x16 map object.
+    private static readonly (byte Left, byte Right, byte LeftAttr, byte RightAttr)[] MapSpriteFrames =
+    [
+        (0x00, 0x00, 0, 0), (0x49, 0x49, 3, 3), (0xC9, 0xCB, 1, 1), (0xC5, 0xC7, 2, 2),
+        (0xC5, 0xC7, 2, 2), (0xC5, 0xC7, 2, 2), (0xC5, 0xC7, 2, 2), (0xE1, 0xE1, 1, 1),
+        (0x21, 0x23, 2, 2), (0x11, 0x21, 3, 3), (0x13, 0x15, 3, 3), (0x17, 0x19, 3, 3),
+        (0xFD, 0xFF, 3, 3), (0xF5, 0xF7, 2, 2), (0xE5, 0xE7, 2, 2), (0xFD, 0xFF, 1, 1),
+        (0x71, 0x73, 2, 2)
+    ];
 
     public static OperationResult<OverworldRenderSnapshot> Render(
         RomImage rom,
@@ -99,5 +109,60 @@ public static class Smb3OverworldRenderer
         var pixels = new uint[16 * 16];
         for (var y = 0; y < 16; y++) Array.Copy(rendered.Value!.ArgbPixels.ToArray(), y * rendered.Value.PixelWidth, pixels, y * 16, 16);
         return OperationResult<MetatilePreview>.Success(new MetatilePreview(16, 16, pixels));
+    }
+
+    /// <summary>Composes the stock 16x16 overworld map-object sprite from PRG11's pattern tables and the user ROM's CHR.</summary>
+    public static OperationResult<MetatilePreview> RenderMapSpritePreview(
+        RomImage rom,
+        OverworldDocument paletteSource,
+        byte type,
+        IReadOnlyList<OverworldPaletteOverride>? paletteOverrides = null)
+    {
+        try
+        {
+            if (type == 0 || type >= MapSpriteFrames.Length)
+                return OperationResult<MetatilePreview>.Success(new MetatilePreview(16, 16, new uint[16 * 16]));
+            var paletteBank = rom.Prg.Slice(PaletteBank * PrgBankSize, PrgBankSize);
+            var pointer = paletteBank[PalettePointerTable] | (paletteBank[PalettePointerTable + 1] << 8);
+            var offset = pointer - 0xA000 + (paletteSource.SpritePalette * 16);
+            if (offset < 0 || offset > paletteBank.Length - 16)
+                return OperationResult<MetatilePreview>.Failure(Diagnostics.Error("OVERWORLD_SPRITE_PALETTE", "The map-sprite palette points outside the verified palette bank."));
+            var palette = paletteOverrides?.LastOrDefault(item => item.Sprites && item.Palette == paletteSource.SpritePalette)?.Colors is { Count: 16 } changed
+                ? changed.ToArray() : paletteBank.Slice(offset, 16).ToArray();
+            var pixels = new uint[16 * 16];
+            var frame = MapSpriteFrames[type];
+            Draw(frame.Left, frame.LeftAttr, 0);
+            Draw(frame.Right, frame.RightAttr, 8);
+            return OperationResult<MetatilePreview>.Success(new MetatilePreview(16, 16, pixels));
+
+            void Draw(byte pattern, byte attribute, int xBase)
+            {
+                // World-map sprites are 8x16 PPU sprites, not map TSA tiles.  PRG030
+                // maps CHR banks $20-$23 into PPU $1000-$1FFF before these PRG011
+                // pattern tables are used.  The low bit selects that PPU pattern table.
+                var ppuOffset = ((pattern & 0xFE) * ChrTileDecoder.BytesPerTile) + 0x1000;
+                for (var tile = 0; tile < 2; tile++)
+                {
+                    var tilePpuOffset = ppuOffset + (tile * ChrTileDecoder.BytesPerTile);
+                    var slot = (tilePpuOffset - 0x1000) / 0x400;
+                    var chrOffset = ((0x20 + slot) * 0x400) + (tilePpuOffset & 0x3FF);
+                    if (slot is < 0 or > 3 || chrOffset < 0 || chrOffset > rom.Chr.Length - ChrTileDecoder.BytesPerTile)
+                        throw new InvalidOperationException("A map-object sprite points outside CHR ROM.");
+                    var decoded = ChrTileDecoder.DecodeTile(rom.Chr.Slice(chrOffset, ChrTileDecoder.BytesPerTile), 0).Value!;
+                    for (var y = 0; y < 8; y++) for (var x = 0; x < 8; x++)
+                    {
+                        var sourceX = (attribute & 0x40) != 0 ? 7 - x : x;
+                        var sourceY = (attribute & 0x80) != 0 ? 7 - y : y;
+                        var color = decoded[(sourceY * 8) + sourceX];
+                        if (color == 0) continue;
+                        pixels[((tile * 8 + y) * 16) + xBase + x] = NesPalette.Argb[palette[(attribute * 4) + color] & 0x3F];
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or IndexOutOfRangeException)
+        {
+            return OperationResult<MetatilePreview>.Failure(Diagnostics.Error("OVERWORLD_SPRITE_RENDER", ex.Message));
+        }
     }
 }

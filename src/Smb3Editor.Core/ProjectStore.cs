@@ -89,6 +89,14 @@ public static class ProjectStore
             {
                 project = MigrateV9(project, diagnostics);
             }
+            if (project.FormatVersion == 10)
+            {
+                project = MigrateV10(project, diagnostics);
+            }
+            if (project.FormatVersion == 11)
+            {
+                project = MigrateV11(project, diagnostics);
+            }
             if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
                 return OperationResult<ProjectDocumentV2>.Failure(
@@ -238,6 +246,19 @@ public static class ProjectStore
     private static ProjectDocumentV2 MigrateV9(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
     {
         diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 9 to format 10 with shared overworld palettes."));
-        return legacy with { FormatVersion = ProjectDocumentV2.CurrentFormatVersion, OverworldPalettes = [] };
+        return legacy with { FormatVersion = 10, OverworldPalettes = [] };
     }
+
+    private static ProjectDocumentV2 MigrateV10(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 10 to format 11 with rebuildable vanilla overworld node sets."));
+        return legacy with { FormatVersion = 11, OverworldNodeSets = [] };
+    }
+
+    private static ProjectDocumentV2 MigrateV11(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 11 to format 12 with vanilla overworld map sprites and transferable map pages."));
+        return legacy with { FormatVersion = 12, OverworldMapSprites = [] };
+    }
+
 }

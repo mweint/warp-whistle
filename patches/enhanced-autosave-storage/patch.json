@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "enhanced-autosave-storage",
+  "displayName": "Enhanced save storage foundation",
+  "description": "Enhanced-only automatic checkpoint storage for one-player PRG1 maps.",
+  "source": "patch.asm",
+  "supportedProfiles": ["us-prg1"],
+  "writes": [
+    { "offset": 246855, "expectedHex": "A9009100", "capacity": 4, "outputOffset": 0, "outputLength": 4 },
+    { "offset": 204004, "expectedHex": "A9009100", "capacity": 4, "outputOffset": 4, "outputLength": 4 },
+    { "offset": 247009, "expectedHex": "99007D8810FA", "capacity": 6, "outputOffset": 8, "outputLength": 6 },
+    { "offset": 96895, "expectedHex": "99007D", "capacity": 3, "outputOffset": 14, "outputLength": 3 },
+    { "offset": 254544, "expectedFill": "FF", "capacity": 128, "outputOffset": 17, "outputLength": 128 },
+    { "offset": 256289, "expectedFill": "FF", "capacity": 111, "outputOffset": 145, "outputLength": 111 }
+  ]
+}

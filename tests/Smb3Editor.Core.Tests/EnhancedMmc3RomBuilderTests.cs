@@ -27,6 +27,8 @@ public sealed class EnhancedMmc3RomBuilderTests
         var output = result.Value!.RomBytes;
         Assert.Equal(16 + 0x80000 + 0x20000, output.Length);
         Assert.Equal(32, output[4]);
+        Assert.Equal(0x02, output[6] & 0x02);
+        Assert.Equal(1, output[8]);
         Assert.Equal(bytes.AsSpan(16, 30 * 0x2000).ToArray(), output.AsSpan(16, 30 * 0x2000).ToArray());
         Assert.Equal(bytes.AsSpan(16 + 30 * 0x2000, 2 * 0x2000).ToArray(), output.AsSpan(16 + 62 * 0x2000, 2 * 0x2000).ToArray());
         Assert.All(output.AsSpan(16 + 30 * 0x2000, 32 * 0x2000).ToArray(), static value => Assert.Equal(0xFF, value));

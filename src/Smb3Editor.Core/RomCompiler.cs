@@ -45,8 +45,10 @@ public sealed class RomCompiler : IRomCompiler
         }
 
         diagnostics.AddRange(Smb3OverworldSerializer.ApplyTileOverrides(project, source, output));
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyNodeSetOverrides(project, source, output));
         diagnostics.AddRange(Smb3OverworldSerializer.ApplyLevelPointerOverrides(project, source, output));
         diagnostics.AddRange(Smb3OverworldSerializer.ApplyLockBridgeOverrides(project, source, output));
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyMapSpriteOverrides(project, source, output));
         diagnostics.AddRange(Smb3OverworldSerializer.ApplyPaletteOverrides(project, source, output));
         foreach (var pair in project.ModifiedAreas.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
@@ -116,7 +118,7 @@ public sealed class RomCompiler : IRomCompiler
                 continue;
             }
 
-            var packageDirectory = Path.Combine(BundledContentPaths.PatchesDirectory, patchId);
+            var packageDirectory = Path.Combine(AppContext.BaseDirectory, "patches", patchId);
             var externalPatch = _asmPatchCompiler.Apply(packageDirectory, source, output);
             diagnostics.AddRange(externalPatch.Diagnostics);
             if (externalPatch.IsSuccess) output = externalPatch.Value!;
@@ -132,6 +134,23 @@ public sealed class RomCompiler : IRomCompiler
             }
             else
             {
+                var storageRoot = PatchCatalog.FindRoot();
+                var storagePackage = storageRoot is null
+                    ? string.Empty
+                    : Path.Combine(storageRoot, "enhanced-autosave-storage");
+                var storageFoundation = _asmPatchCompiler.Apply(storagePackage, source, output);
+                diagnostics.AddRange(storageFoundation.Diagnostics);
+                if (!storageFoundation.IsSuccess)
+                {
+                    diagnostics.Add(Diagnostics.Error(
+                        "ENHANCED_SAVE_STORAGE",
+                        "Enhanced save storage could not reserve its verified PRG1 WRAM range."));
+                }
+                else
+                {
+                    output = storageFoundation.Value!;
+                }
+
                 var expanded = _enhancedBuilder.Build(project, source, output);
                 diagnostics.AddRange(expanded.Diagnostics);
                 if (expanded.IsSuccess)

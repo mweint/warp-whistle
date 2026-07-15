@@ -21,7 +21,11 @@ public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, strin
 public sealed record OverworldTileOverride(int World, IReadOnlyList<byte> Tiles);
 /// <summary>One existing vanilla map-entry slot; raw pointers preserve bonus and other non-stage entries.</summary>
 public sealed record OverworldLevelPointerOverride(int World, int Index, int Screen, int Column, int Row, int ObjectSet, ushort LevelOffset, ushort EnemyOffset);
+/// <summary>A complete vanilla node set for one normal overworld. The compiler rebuilds its parallel tables.</summary>
+public sealed record OverworldNodeSetOverride(int World, IReadOnlyList<OverworldNodeOverride> Nodes);
+public sealed record OverworldNodeOverride(int Screen, int Column, int Row, int ObjectSet, ushort LevelOffset, ushort EnemyOffset);
 public sealed record OverworldLockBridgeOverride(int World, int Slot, int Screen, int Column, int Row, byte ReplacementTile);
+public sealed record OverworldMapSpriteOverride(int World, int Index, int Screen, int Column, int Row, byte Type, byte Item);
 /// <summary>One shared vanilla overworld palette entry. Palette indices are shared by worlds that reference them.</summary>
 public sealed record OverworldPaletteOverride(int Palette, bool Sprites, IReadOnlyList<byte> Colors);
 
@@ -107,10 +111,12 @@ public sealed record ProjectDocumentV2(
     IReadOnlyList<string>? ExternalPatches = null,
     IReadOnlyList<OverworldTileOverride>? OverworldTiles = null,
     IReadOnlyList<OverworldLevelPointerOverride>? OverworldLevelPointers = null,
+    IReadOnlyList<OverworldNodeSetOverride>? OverworldNodeSets = null,
     IReadOnlyList<OverworldLockBridgeOverride>? OverworldLocksAndBridges = null,
-    IReadOnlyList<OverworldPaletteOverride>? OverworldPalettes = null)
+    IReadOnlyList<OverworldPaletteOverride>? OverworldPalettes = null,
+    IReadOnlyList<OverworldMapSpriteOverride>? OverworldMapSprites = null)
 {
-    public const int CurrentFormatVersion = 10;
+    public const int CurrentFormatVersion = 12;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
@@ -122,6 +128,8 @@ public sealed record ProjectDocumentV2(
         PatchSettings.None,
         RomOutputMode.Vanilla,
         RomStorageMode.FixedSlots,
+        [],
+        [],
         [],
         [],
         [],
@@ -156,6 +164,21 @@ public sealed record ProjectDocumentV2(
         return this with { OverworldLevelPointers = entries };
     }
 
+    public ProjectDocumentV2 WithOverworldNodes(OverworldDocument document)
+    {
+        var nodes = document.LevelPointers
+            .OrderBy(static node => node.Screen).ThenBy(static node => node.Row).ThenBy(static node => node.Column)
+            .Select(static node => new OverworldNodeOverride(node.Screen, node.Column, node.Row, node.ObjectSet, node.LevelOffset, node.EnemyOffset))
+            .ToArray();
+        var sets = (OverworldNodeSets ?? []).Where(item => item.World != document.World)
+            .Append(new OverworldNodeSetOverride(document.World, nodes))
+            .OrderBy(static item => item.World).ToArray();
+        // Index-based overrides address the source table. They cannot safely coexist
+        // with a rebuilt table for the same world.
+        var legacy = (OverworldLevelPointers ?? []).Where(item => item.World != document.World).ToArray();
+        return this with { OverworldNodeSets = sets, OverworldLevelPointers = legacy };
+    }
+
     public ProjectDocumentV2 WithOverworldLockBridge(OverworldLockBridge item)
     {
         var replacement = new OverworldLockBridgeOverride(item.World, item.Slot, item.Screen, item.Column, item.Row, item.ReplacementTile);
@@ -165,6 +188,17 @@ public sealed record ProjectDocumentV2(
             .OrderBy(static existing => existing.World).ThenBy(static existing => existing.Slot).ToArray();
         return this with { OverworldLocksAndBridges = entries };
     }
+
+    public ProjectDocumentV2 WithOverworldMapSprite(OverworldMapSprite item)
+    {
+        var replacement = new OverworldMapSpriteOverride(item.World, item.Index, item.Screen, item.Column, item.Row, item.Type, item.Item);
+        var entries = (OverworldMapSprites ?? [])
+            .Where(existing => existing.World != item.World || existing.Index != item.Index)
+            .Append(replacement)
+            .OrderBy(static existing => existing.World).ThenBy(static existing => existing.Index).ToArray();
+        return this with { OverworldMapSprites = entries };
+    }
+
 
     public ProjectDocumentV2 WithOverworldPalette(int palette, bool sprites, IReadOnlyList<byte> colors)
     {

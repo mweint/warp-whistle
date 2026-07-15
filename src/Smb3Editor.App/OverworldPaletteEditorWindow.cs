@@ -33,6 +33,10 @@ public sealed class OverworldPaletteEditorWindow : Window
     private bool _approved;
     private bool _saved;
     private Popup? _picker;
+    private Button? _undoButton;
+    private Button? _redoButton;
+    private readonly Stack<Dictionary<(int Palette, bool Sprites), byte[]>> _undo = [];
+    private readonly Stack<Dictionary<(int Palette, bool Sprites), byte[]>> _redo = [];
 
     public OverworldPaletteEditorWindow(
         IReadOnlyList<int> tilePalettes,
@@ -54,6 +58,7 @@ public sealed class OverworldPaletteEditorWindow : Window
         _spritePaletteBox.SelectedItem = ((IEnumerable<OverworldPaletteChoice>)_spritePaletteBox.ItemsSource).FirstOrDefault(item => item.Value == _spritePalette);
         _tilePaletteBox.SelectionChanged += (_, _) => Switch(false);
         _spritePaletteBox.SelectionChanged += (_, _) => Switch(true);
+        KeyDown += OnKeyDown;
 
         var content = new StackPanel { Margin = new Thickness(12), Spacing = 10 };
         content.Children.Add(new TextBlock { Text = "Overworld palettes", FontWeight = FontWeight.SemiBold, FontSize = 18 });
@@ -62,11 +67,16 @@ public sealed class OverworldPaletteEditorWindow : Window
         content.Children.Add(Panel("Map sprites", _spritePaletteBox, _sprites));
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, HorizontalAlignment = HorizontalAlignment.Right };
         var cancelButton = new Button { Content = "Cancel" }; cancelButton.Click += (_, _) => { _approved = true; Close(); };
+        _undoButton = new Button { Content = "↶", Width = 32 }; ToolTip.SetTip(_undoButton, "Undo (Ctrl+Z)");
+        _redoButton = new Button { Content = "↷", Width = 32 }; ToolTip.SetTip(_redoButton, "Redo (Ctrl+Y)");
+        _undoButton.Click += (_, _) => UndoDraft();
+        _redoButton.Click += (_, _) => RedoDraft();
         var save = new Button { Content = "💾", Width = 36 }; ToolTip.SetTip(save, "Save changes");
         save.Click += (_, _) => SaveAndClose();
-        buttons.Children.Add(cancelButton); buttons.Children.Add(save); content.Children.Add(buttons);
+        buttons.Children.Add(_undoButton); buttons.Children.Add(_redoButton); buttons.Children.Add(cancelButton); buttons.Children.Add(save); content.Children.Add(buttons);
         Content = content;
         Refresh();
+        UpdateHistoryButtons();
     }
 
     protected override void OnClosing(WindowClosingEventArgs e)
@@ -128,10 +138,54 @@ public sealed class OverworldPaletteEditorWindow : Window
         popup = new Popup { PlacementTarget = anchor, Placement = PlacementMode.Bottom, IsLightDismissEnabled = true,
             Child = new NesColorPickerPopup(colors[index], color =>
             {
+                if (colors[index] == color) { popup!.IsOpen = false; return; }
+                _undo.Push(CloneDrafts()); _redo.Clear();
                 colors[index] = color; _drafts[(palette, sprites)] = colors; _dirty = true;
                 _preview(palette, sprites, colors); Refresh(); popup!.IsOpen = false;
+                UpdateHistoryButtons();
             }) };
         _picker = popup; popup.IsOpen = true;
+    }
+
+    private void UndoDraft()
+    {
+        if (_undo.Count == 0) return;
+        _redo.Push(CloneDrafts());
+        RestoreDrafts(_undo.Pop());
+    }
+
+    private void RedoDraft()
+    {
+        if (_redo.Count == 0) return;
+        _undo.Push(CloneDrafts());
+        RestoreDrafts(_redo.Pop());
+    }
+
+    private void RestoreDrafts(Dictionary<(int Palette, bool Sprites), byte[]> drafts)
+    {
+        _drafts.Clear();
+        foreach (var (key, value) in drafts) _drafts[key] = value.ToArray();
+        _dirty = _drafts.Count > 0;
+        _cancel();
+        foreach (var (key, value) in _drafts) _preview(key.Palette, key.Sprites, value);
+        Refresh();
+        UpdateHistoryButtons();
+    }
+
+    private Dictionary<(int Palette, bool Sprites), byte[]> CloneDrafts() =>
+        _drafts.ToDictionary(static item => item.Key, static item => item.Value.ToArray());
+
+    private void UpdateHistoryButtons()
+    {
+        if (_undoButton is not null) _undoButton.IsEnabled = _undo.Count > 0;
+        if (_redoButton is not null) _redoButton.IsEnabled = _redo.Count > 0;
+    }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (!e.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
+        if (e.Key == Key.Z) { UndoDraft(); e.Handled = true; }
+        else if (e.Key == Key.Y) { RedoDraft(); e.Handled = true; }
     }
 
     private static UniformGrid Grid() => new() { Columns = 4, Rows = 4, Width = 88, Height = 88 };
