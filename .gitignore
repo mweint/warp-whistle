@@ -26,6 +26,7 @@ tools/debug-addon.lua
 
 # User-owned ROMs, generated builds, patches, and local editor projects.
 *.nes
+*.nes.bak
 *.rom
 *.bps
 *.ips

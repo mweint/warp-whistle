@@ -1,9 +1,17 @@
-name: release
+name: Release Alpha
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing alpha tag to replace
+        required: true
+        default: v0.1.0-alpha.1
+      replace_existing_alpha:
+        description: Replace the selected existing alpha release
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -13,6 +21,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
@@ -20,23 +30,36 @@ jobs:
         run: dotnet restore Smb3Editor.slnx
       - name: Test
         run: dotnet run --project tests/Smb3Editor.Core.Tests -c Release --no-restore
-      - name: Package Warp Whistle
+      - name: Publish
         run: >
           dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
           -p:DebugType=None -p:DebugSymbols=false -p:EnableTraceTools=false -o artifacts/release
-      - name: Build portable ZIP
+      - name: Package portable ZIP
         shell: pwsh
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File tools/Build-PortablePackage.ps1
           -PublishDirectory artifacts/release -Assembler tools/asm6f/asm6f_64.exe -OutputDirectory artifacts/portable;
           Compress-Archive -Path artifacts/portable/WarpWhistle -DestinationPath
-          "artifacts/WarpWhistle-${{ github.ref_name }}-win-x64.zip" -Force
-      - name: Create alpha release
+          "artifacts/WarpWhistle-${{ inputs.tag }}-win-x64.zip" -Force;
+          pwsh -NoProfile -ExecutionPolicy Bypass -File tools/Verify-PortablePackage.ps1
+          -ZipPath "artifacts/WarpWhistle-${{ inputs.tag }}-win-x64.zip"
+      - name: Replace alpha release
+        if: ${{ inputs.replace_existing_alpha }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release delete "${{ github.ref_name }}" --yes;
-          gh release create "${{ github.ref_name }}" "artifacts/WarpWhistle-${{ github.ref_name }}-win-x64.zip"
-          --title "Warp Whistle ${{ github.ref_name }}" --generate-notes --prerelease
+        run: |
+          gh release delete "${{ inputs.tag }}" --yes --cleanup-tag
+          git tag -f "${{ inputs.tag }}" ${{ github.sha }}
+          git push origin "${{ inputs.tag }}" --force
+          gh release create "${{ inputs.tag }}" "artifacts/WarpWhistle-${{ inputs.tag }}-win-x64.zip" --title "Warp Whistle ${{ inputs.tag }}" --prerelease --generate-notes
+      - name: Create alpha release
+        if: ${{ !inputs.replace_existing_alpha }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git tag "${{ inputs.tag }}" ${{ github.sha }}
+          git push origin "${{ inputs.tag }}"
+          gh release create "${{ inputs.tag }}" "artifacts/WarpWhistle-${{ inputs.tag }}-win-x64.zip" --title "Warp Whistle ${{ inputs.tag }}" --prerelease --generate-notes
