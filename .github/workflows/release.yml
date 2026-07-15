@@ -28,9 +28,8 @@ jobs:
       - name: Build portable ZIP
         shell: pwsh
         run: >
-          New-Item -ItemType Directory -Force artifacts/portable/WarpWhistle |
-          Out-Null; Copy-Item distribution/* artifacts/portable/WarpWhistle -Recurse -Force;
-          Copy-Item artifacts/release/WarpWhistle.exe artifacts/portable/WarpWhistle/WarpWhistle.exe -Force;
+          pwsh -NoProfile -ExecutionPolicy Bypass -File tools/Build-PortablePackage.ps1
+          -PublishDirectory artifacts/release -Assembler tools/asm6f/asm6f_64.exe -OutputDirectory artifacts/portable;
           Compress-Archive -Path artifacts/portable/WarpWhistle -DestinationPath
           "artifacts/WarpWhistle-${{ github.ref_name }}-win-x64.zip" -Force
       - name: Create alpha release

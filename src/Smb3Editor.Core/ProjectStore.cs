@@ -73,6 +73,22 @@ public static class ProjectStore
             {
                 project = MigrateV5(project, diagnostics);
             }
+            if (project.FormatVersion == 6)
+            {
+                project = MigrateV6(project, diagnostics);
+            }
+            if (project.FormatVersion == 7)
+            {
+                project = MigrateV7(project, diagnostics);
+            }
+            if (project.FormatVersion == 8)
+            {
+                project = MigrateV8(project, diagnostics);
+            }
+            if (project.FormatVersion == 9)
+            {
+                project = MigrateV9(project, diagnostics);
+            }
             if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
                 return OperationResult<ProjectDocumentV2>.Failure(
@@ -195,9 +211,33 @@ public static class ProjectStore
         diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 5 to format 6 with explicit vanilla/enhanced output modes."));
         return legacy with
         {
-            FormatVersion = ProjectDocumentV2.CurrentFormatVersion,
+            FormatVersion = 6,
             OutputMode = RomOutputMode.Vanilla,
             StorageMode = RomStorageMode.FixedSlots
         };
+    }
+
+    private static ProjectDocumentV2 MigrateV6(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 6 to format 7 with project-only overworld tiles."));
+        return legacy with { FormatVersion = 7, OverworldTiles = [] };
+    }
+
+    private static ProjectDocumentV2 MigrateV7(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 7 to format 8 with fixed-slot overworld map-node edits."));
+        return legacy with { FormatVersion = 8, OverworldLevelPointers = [] };
+    }
+
+    private static ProjectDocumentV2 MigrateV8(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 8 to format 9 with overworld lock and bridge edits."));
+        return legacy with { FormatVersion = 9, OverworldLocksAndBridges = [] };
+    }
+
+    private static ProjectDocumentV2 MigrateV9(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 9 to format 10 with shared overworld palettes."));
+        return legacy with { FormatVersion = ProjectDocumentV2.CurrentFormatVersion, OverworldPalettes = [] };
     }
 }

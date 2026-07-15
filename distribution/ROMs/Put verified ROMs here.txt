@@ -1,1 +1,0 @@
-Put clean, user-supplied SMB3 PRG0 or PRG1 ROMs in this folder.

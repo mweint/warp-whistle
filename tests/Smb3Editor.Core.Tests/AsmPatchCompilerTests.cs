@@ -34,6 +34,33 @@ public sealed class AsmPatchCompilerTests
         Assert.False(scroll.RecommendedDefault);
         Assert.True(scroll.SupportsLevelOverrides);
         Assert.Equal(211, Assert.Single(scroll.Requirements).EnemyId);
+
+        var infiniteLives = Assert.Single(result.Value!.SelectMany(static package => package.Features), feature => feature.Id == "infinite-lives");
+        Assert.False(infiniteLives.RecommendedDefault);
+        Assert.False(infiniteLives.SupportsLevelOverrides);
+    }
+
+    [Fact]
+    public void InfiniteLivesPatchOnlyReplacesTheVerifiedLifeLossInstruction()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var source = RomImage.Load(path);
+        Assert.True(source.IsSuccess, string.Join(Environment.NewLine, source.Diagnostics));
+        if (source.Value!.Profile.Id != "us-prg1") return;
+
+        var package = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "patches", "infinite-lives"));
+        var result = new AsmPatchCompiler(new Asm6fAssembler()).Apply(
+            package,
+            source.Value,
+            source.Value.Bytes,
+            new HashSet<string>(StringComparer.Ordinal) { "infinite-lives" });
+
+        Assert.True(result.IsSuccess, string.Join(Environment.NewLine, result.Diagnostics));
+        Assert.Equal([0xEA, 0xEA, 0xEA], result.Value!.AsSpan(0x3D133, 3).ToArray());
+        Assert.Equal(source.Value.Bytes.AsSpan(0x3D130, 3).ToArray(), result.Value.AsSpan(0x3D130, 3).ToArray());
+        Assert.Equal(source.Value.Bytes.AsSpan(0x3D136, 3).ToArray(), result.Value.AsSpan(0x3D136, 3).ToArray());
     }
 
     private static bool Contains(byte[] bytes, byte[] pattern)

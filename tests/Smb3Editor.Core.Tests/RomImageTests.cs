@@ -182,6 +182,146 @@ public sealed class RomImageTests
     }
 
     [Fact]
+    public void OptionalUserSuppliedPrg1RomParsesAllOverworldMaps()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        if (loaded.Value!.Profile.Id != "us-prg1")
+        {
+            return;
+        }
+
+        var parsed = Smb3OverworldParser.Parse(loaded.Value);
+        Assert.True(parsed.IsSuccess, string.Join(Environment.NewLine, parsed.Diagnostics));
+        Assert.Equal(9, parsed.Value!.Count);
+        Assert.All(parsed.Value, map =>
+        {
+            Assert.InRange(map.ScreenCount, 1, 4);
+            Assert.All(map.LevelPointers, pointer => Assert.InRange(pointer.Row, 2, 10));
+            for (var screen = 0; screen < map.ScreenCount; screen++)
+            for (var row = 0; row < OverworldDocument.ScreenHeight; row++)
+            for (var column = 0; column < OverworldDocument.ScreenWidth; column++)
+            {
+                var x = (screen * OverworldDocument.ScreenWidth) + column;
+                Assert.Equal(map.Tiles[(screen * OverworldDocument.ScreenWidth * OverworldDocument.ScreenHeight) + (row * OverworldDocument.ScreenWidth) + column], map.TileAt(x, row));
+            }
+        });
+    }
+
+    [Fact]
+    public void OptionalUserSuppliedPrg1RomRendersEveryOverworldMapAndAnimationFrame()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
+            return;
+        }
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        if (loaded.Value!.Profile.Id != "us-prg1")
+        {
+            return;
+        }
+
+        var parsed = Smb3OverworldParser.Parse(loaded.Value);
+        Assert.True(parsed.IsSuccess, string.Join(Environment.NewLine, parsed.Diagnostics));
+        foreach (var map in parsed.Value!)
+        {
+            for (var frame = 0; frame < 4; frame++)
+            {
+                var rendered = Smb3OverworldRenderer.Render(loaded.Value, map, frame);
+                Assert.True(rendered.IsSuccess, $"World {map.World + 1}, frame {frame}: {string.Join(Environment.NewLine, rendered.Diagnostics)}");
+                Assert.Equal(map.Width * 16, rendered.Value!.PixelWidth);
+                Assert.Equal(OverworldDocument.ScreenHeight * 16, rendered.Value.PixelHeight);
+            }
+        }
+    }
+
+    [Fact]
+    public void OptionalUserSuppliedPrg1RomCompilesFixedSizeOverworldTileOverride()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var source = loaded.Value!;
+        if (source.Profile.Id != "us-prg1") return;
+
+        var maps = Smb3OverworldParser.Parse(source);
+        Assert.True(maps.IsSuccess, string.Join(Environment.NewLine, maps.Diagnostics));
+        var world = maps.Value![0];
+        var tiles = world.Tiles.ToArray();
+        tiles[0] ^= 0x01;
+        var project = ProjectDocumentV2.Create(source) with
+        {
+            OverworldTiles = [new OverworldTileOverride(world.World, tiles)]
+        };
+
+        var compiled = new RomCompiler().Compile(project, source);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+        Assert.Equal(tiles, compiled.Value!.RomBytes.AsSpan(world.LayoutOffset, tiles.Length).ToArray());
+        Assert.Equal((byte)0xFF, compiled.Value.RomBytes[world.LayoutOffset + tiles.Length]);
+    }
+
+    [Fact]
+    public void OptionalUserSuppliedPrg1RomCompilesFixedSizeOverworldNodeOverride()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var source = loaded.Value!;
+        if (source.Profile.Id != "us-prg1") return;
+
+        var maps = Smb3OverworldParser.Parse(source);
+        Assert.True(maps.IsSuccess, string.Join(Environment.NewLine, maps.Diagnostics));
+        var world = maps.Value![0];
+        var original = world.LevelPointers[0];
+        var changed = original with { Column = (original.Column + 1) & 0x0F };
+        var project = ProjectDocumentV2.Create(source).WithOverworldLevelPointer(world.World, changed);
+
+        var compiled = new RomCompiler().Compile(project, source);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+        Assert.Equal((byte)((changed.Screen << 4) | changed.Column), compiled.Value!.RomBytes[original.PositionXOffset]);
+        Assert.Equal(source.Bytes[original.PositionYOffset], compiled.Value.RomBytes[original.PositionYOffset]);
+        Assert.Equal(source.Bytes[original.LevelPointerOffset], compiled.Value.RomBytes[original.LevelPointerOffset]);
+        Assert.Equal(source.Bytes[original.EnemyPointerOffset], compiled.Value.RomBytes[original.EnemyPointerOffset]);
+    }
+
+    [Fact]
+    public void OptionalUserSuppliedPrg1RomCompilesFixedSizeOverworldLockBridgeOverride()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var source = loaded.Value!;
+        if (source.Profile.Id != "us-prg1") return;
+
+        var maps = Smb3OverworldParser.Parse(source);
+        Assert.True(maps.IsSuccess, string.Join(Environment.NewLine, maps.Diagnostics));
+        var original = maps.Value!.First(map => map.LocksAndBridges.Count > 0).LocksAndBridges[0];
+        var changed = original with { ReplacementTile = (byte)(original.ReplacementTile ^ 0x01) };
+        var project = ProjectDocumentV2.Create(source).WithOverworldLockBridge(changed);
+
+        var compiled = new RomCompiler().Compile(project, source);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+        Assert.Equal(changed.ReplacementTile, compiled.Value!.RomBytes[original.ReplacementTileOffset]);
+        Assert.Equal(source.Bytes[original.PositionOffset], compiled.Value.RomBytes[original.PositionOffset]);
+        Assert.Equal(source.Bytes[original.RowOffset], compiled.Value.RomBytes[original.RowOffset]);
+    }
+
+    [Fact]
     public void OptionalUserSuppliedRomMutationSweepsEveryMovablePackedCoordinate()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");

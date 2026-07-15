@@ -17,6 +17,13 @@ public sealed record EditorState(
 
 public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
 public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, string Name);
+/// <summary>Fixed-size overworld tile edits, serialized only to their verified vanilla PRG1 slots.</summary>
+public sealed record OverworldTileOverride(int World, IReadOnlyList<byte> Tiles);
+/// <summary>One existing vanilla map-entry slot; raw pointers preserve bonus and other non-stage entries.</summary>
+public sealed record OverworldLevelPointerOverride(int World, int Index, int Screen, int Column, int Row, int ObjectSet, ushort LevelOffset, ushort EnemyOffset);
+public sealed record OverworldLockBridgeOverride(int World, int Slot, int Screen, int Column, int Row, byte ReplacementTile);
+/// <summary>One shared vanilla overworld palette entry. Palette indices are shared by worlds that reference them.</summary>
+public sealed record OverworldPaletteOverride(int Palette, bool Sprites, IReadOnlyList<byte> Colors);
 
 public enum RomOutputMode
 {
@@ -97,9 +104,13 @@ public sealed record ProjectDocumentV2(
     PatchSettings? Patches = null,
     RomOutputMode OutputMode = RomOutputMode.Vanilla,
     RomStorageMode StorageMode = RomStorageMode.FixedSlots,
-    IReadOnlyList<string>? ExternalPatches = null)
+    IReadOnlyList<string>? ExternalPatches = null,
+    IReadOnlyList<OverworldTileOverride>? OverworldTiles = null,
+    IReadOnlyList<OverworldLevelPointerOverride>? OverworldLevelPointers = null,
+    IReadOnlyList<OverworldLockBridgeOverride>? OverworldLocksAndBridges = null,
+    IReadOnlyList<OverworldPaletteOverride>? OverworldPalettes = null)
 {
-    public const int CurrentFormatVersion = 6;
+    public const int CurrentFormatVersion = 10;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
@@ -111,6 +122,10 @@ public sealed record ProjectDocumentV2(
         PatchSettings.None,
         RomOutputMode.Vanilla,
         RomStorageMode.FixedSlots,
+        [],
+        [],
+        [],
+        [],
         []);
 
     public ProjectDocumentV2 WithArea(LevelDocument document)
@@ -120,5 +135,44 @@ public sealed record ProjectDocumentV2(
             [document.AreaId] = document
         };
         return this with { ModifiedAreas = areas, EditorState = EditorState with { LastAreaId = document.AreaId } };
+    }
+
+    public ProjectDocumentV2 WithOverworld(OverworldDocument document)
+    {
+        var maps = (OverworldTiles ?? []).Where(item => item.World != document.World)
+            .Append(new OverworldTileOverride(document.World, document.Tiles.ToArray()))
+            .OrderBy(static item => item.World).ToArray();
+        return this with { OverworldTiles = maps };
+    }
+
+    public ProjectDocumentV2 WithOverworldLevelPointer(int world, OverworldLevelPointer pointer)
+    {
+        var replacement = new OverworldLevelPointerOverride(world, pointer.Index, pointer.Screen, pointer.Column, pointer.Row,
+            pointer.ObjectSet, pointer.LevelOffset, pointer.EnemyOffset);
+        var entries = (OverworldLevelPointers ?? [])
+            .Where(item => item.World != world || item.Index != pointer.Index)
+            .Append(replacement)
+            .OrderBy(static item => item.World).ThenBy(static item => item.Index).ToArray();
+        return this with { OverworldLevelPointers = entries };
+    }
+
+    public ProjectDocumentV2 WithOverworldLockBridge(OverworldLockBridge item)
+    {
+        var replacement = new OverworldLockBridgeOverride(item.World, item.Slot, item.Screen, item.Column, item.Row, item.ReplacementTile);
+        var entries = (OverworldLocksAndBridges ?? [])
+            .Where(existing => existing.World != item.World || existing.Slot != item.Slot)
+            .Append(replacement)
+            .OrderBy(static existing => existing.World).ThenBy(static existing => existing.Slot).ToArray();
+        return this with { OverworldLocksAndBridges = entries };
+    }
+
+    public ProjectDocumentV2 WithOverworldPalette(int palette, bool sprites, IReadOnlyList<byte> colors)
+    {
+        if (palette < 0 || colors.Count != 16) return this;
+        var entries = (OverworldPalettes ?? [])
+            .Where(item => item.Palette != palette || item.Sprites != sprites)
+            .Append(new OverworldPaletteOverride(palette, sprites, colors.Select(static color => (byte)(color & 0x3F)).ToArray()))
+            .OrderBy(static item => item.Sprites).ThenBy(static item => item.Palette).ToArray();
+        return this with { OverworldPalettes = entries };
     }
 }

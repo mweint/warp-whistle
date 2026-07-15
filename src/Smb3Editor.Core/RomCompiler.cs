@@ -43,6 +43,11 @@ public sealed class RomCompiler : IRomCompiler
             }
             palette.Colors.ToArray().CopyTo(output, romOffset);
         }
+
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyTileOverrides(project, source, output));
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyLevelPointerOverrides(project, source, output));
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyLockBridgeOverrides(project, source, output));
+        diagnostics.AddRange(Smb3OverworldSerializer.ApplyPaletteOverrides(project, source, output));
         foreach (var pair in project.ModifiedAreas.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
         {
             if (!source.Profile.Levels.TryGetValue(pair.Key, out var location))

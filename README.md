@@ -17,7 +17,12 @@ Exports/                   Exported ROMs and patches
 Data/                      Settings, palette library, temporary play tests
 ```
 
-When no previous choice is saved, Warp Whistle opens the first verified ROM in `ROMs/` and uses `Mesen.exe` found under `Emulators/`. The legacy `externals/` layout remains supported. Item art is kept in memory only; it is not written to a hidden preview cache.
+When no previous choice is saved, Warp Whistle opens the first verified ROM in `ROMs/` and uses `Mesen.exe` found under `Emulators/`. Item art is kept in memory only; it is not written to a hidden preview cache.
+
+In the source checkout, these user-owned folders are kept under ignored
+`.local/workspace/` so the repository root stays source-focused. The app detects
+that layout automatically. Release ZIPs are generated directly from the
+packaging script and do not rely on a second checked-in workspace template.
 
 ## Current vertical slice
 
@@ -53,7 +58,12 @@ dotnet run --project src/Smb3Editor.App
 Create the self-contained Windows build with:
 
 ```powershell
-dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o artifacts/win-x64-warp-whistle
+dotnet publish src/Smb3Editor.App -c Release -r win-x64 --self-contained true -o .local/publish
 ```
 
 ROMs, patches, generated builds, and Warp Whistle `.wwproj` files are ignored by source control.
+
+Development-only downloads and staging outputs belong under `.local/` (for example
+`.local/references/` and `.local/publish/`). The repository-root `WarpWhistle.exe`
+is the canonical local executable; CI creates its own temporary `artifacts/`
+directory for packaging and release uploads.
