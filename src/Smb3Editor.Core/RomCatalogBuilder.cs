@@ -111,7 +111,9 @@ internal static class RomCatalogBuilder
                     enemyCapacity,
                     extraIds,
                     signed ? new byte[] { 0x00, 0x00, 0x03, 0x1A, 0x00, 0xC0, 0x26, 0x11 } : Array.Empty<byte>(),
-                    signed ? new byte[] { 0x01, 0x72, 0x0E, 0x19, 0xA6, 0x16, 0x17 } : Array.Empty<byte>());
+                    signed ? new byte[] { 0x01, 0x72, 0x0E, 0x19, 0xA6, 0x16, 0x17 } : Array.Empty<byte>(),
+                    layoutTable + (stage.Index * 2),
+                    enemyTable + (stage.Index * 2));
             }
         }
 

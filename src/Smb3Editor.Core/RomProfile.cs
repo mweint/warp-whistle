@@ -10,7 +10,9 @@ public sealed record LevelLocation(
     int EnemyCapacity,
     IReadOnlySet<int> FourByteGeneratorIds,
     IReadOnlyList<byte> LayoutDataSignature,
-    IReadOnlyList<byte> EnemySignature)
+    IReadOnlyList<byte> EnemySignature,
+    int LayoutPointerOffset = -1,
+    int EnemyPointerOffset = -1)
 {
     public override string ToString() => DisplayName;
 }

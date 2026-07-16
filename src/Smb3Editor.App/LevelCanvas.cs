@@ -571,12 +571,9 @@ public sealed class LevelCanvas : Control
             ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Error, "Enemy cannot be encoded", string.Join(" ", encoded.Diagnostics.Select(item => item.Message)), null, true, true));
             return;
         }
-        if (encoded.Value!.Length > _document.OriginalEnemyLength)
-        {
-            var extraBytes = encoded.Value.Length - _document.OriginalEnemyLength;
-            ActionFeedbackAvailable?.Invoke(new(DiagnosticSeverity.Warning, "Sprite data is over capacity", $"This area needs {extraBytes} more sprite byte{(extraBytes == 1 ? string.Empty : "s")}. Remove or replace sprites before exporting.", null, true, true));
-            return;
-        }
+        // Capacity is project-wide for verified PRG1: relocated streams share audited
+        // per-bank pools. MainWindow obtains both display and export truth from the
+        // compiler's relocation analysis rather than comparing this area to its old slot.
         PersistentActionFeedbackCleared?.Invoke();
     }
 

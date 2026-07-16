@@ -13,7 +13,11 @@ public sealed class PatchCompiler
         _packageDirectory = packageDirectory;
     }
 
-    public OperationResult<byte[]> Apply(ProjectDocumentV2 project, RomImage source, byte[] compiledBytes)
+    public OperationResult<byte[]> Apply(
+        ProjectDocumentV2 project,
+        RomImage source,
+        byte[] compiledBytes,
+        IReadOnlyDictionary<string, int>? layoutOffsetsByArea = null)
     {
         var settings = project.Patches ?? PatchSettings.None;
         if (!settings.HasEnabledOptions(source.Profile.Levels.Keys))
@@ -51,7 +55,7 @@ public sealed class PatchCompiler
 
             if (package.Manifest.Configuration is { Kind: "levelFlagsV1" } configuration)
             {
-                var configured = WriteLevelFlags(configuration, package.Features, settings, source, output);
+                var configured = WriteLevelFlags(configuration, package.Features, settings, source, output, layoutOffsetsByArea);
                 if (!configured.IsSuccess) return OperationResult<byte[]>.Failure([.. configured.Diagnostics]);
                 output = configured.Value!;
             }
@@ -69,7 +73,8 @@ public sealed class PatchCompiler
         IReadOnlyList<PatchDefinition> features,
         PatchSettings settings,
         RomImage source,
-        byte[] output)
+        byte[] output,
+        IReadOnlyDictionary<string, int>? layoutOffsetsByArea)
     {
         if (configuration.Capacity < 1 || configuration.Offset < 0 || configuration.Offset > output.Length - configuration.Capacity)
             return OperationResult<byte[]>.Failure(Diagnostics.Error("PATCH_MANIFEST", "The levelFlagsV1 configuration range is invalid."));
@@ -88,8 +93,12 @@ public sealed class PatchCompiler
         var bytes = Enumerable.Repeat((byte)0xFF, configuration.Capacity).ToArray();
         for (var index = 0; index < overrideIds.Length; index++)
         {
-            var level = source.Profile.Levels[overrideIds[index]];
-            var pointer = (ushort)(0xA000 + ((level.LayoutOffset - source.PrgOffset) & 0x1FFF));
+            var areaId = overrideIds[index];
+            var level = source.Profile.Levels[areaId];
+            var layoutOffset = layoutOffsetsByArea is not null && layoutOffsetsByArea.TryGetValue(areaId, out var relocatedOffset)
+                ? relocatedOffset
+                : level.LayoutOffset;
+            var pointer = (ushort)(0xA000 + ((layoutOffset - source.PrgOffset) & 0x1FFF));
             bytes[index * 3] = (byte)pointer;
             bytes[index * 3 + 1] = (byte)(pointer >> 8);
             bytes[index * 3 + 2] = Flags(overrideIds[index]);

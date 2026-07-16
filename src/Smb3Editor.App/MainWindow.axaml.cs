@@ -2888,10 +2888,43 @@ public sealed partial class MainWindow : Window
         _refreshingInspector = false;
         var layout = Smb3LevelCodec.EncodeLayout(_document);
         var enemies = Smb3LevelCodec.EncodeEnemies(_document);
-        UpdateByteBudget(layout.Value?.Length ?? 0, _document.OriginalLayoutLength, enemies.Value?.Length ?? 0, _document.OriginalEnemyLength);
-        SpaceText.Text = $"Layout: {layout.Value?.Length ?? 0} / {_document.OriginalLayoutLength} bytes\n" +
-                         $"Sprites: {enemies.Value?.Length ?? 0} / {_document.OriginalEnemyLength} bytes\n" +
-                         $"Used by: {string.Join(", ", _document.UsedBy)}";
+        var layoutUsed = layout.Value?.Length ?? 0;
+        var spriteUsed = enemies.Value?.Length ?? 0;
+        var capacity = _project is not null && string.Equals(_rom.Profile.Id, "us-prg1", StringComparison.Ordinal)
+            ? _compiler.AnalyzeVanillaCapacity(_project.WithArea(_document), _rom).Find(_document.AreaId)
+            : null;
+        if (capacity is not null)
+        {
+            UpdateByteBudget(capacity);
+            SpaceText.Text =
+                $"Layout: {capacity.Layout.Used} / {capacity.Layout.MaximumStreamLength} bytes" +
+                $" (original slot {capacity.Layout.OriginalCapacity})\n" +
+                $"Shared PRG{capacity.LayoutBank} layout pool: {capacity.Layout.SharedPoolUsed} / {capacity.Layout.SharedPoolCapacity} bytes\n" +
+                $"Sprites: {capacity.Sprites.Used} / {capacity.Sprites.MaximumStreamLength} bytes" +
+                $" (original slot {capacity.Sprites.OriginalCapacity})\n" +
+                $"Shared PRG6 sprite pool: {capacity.Sprites.SharedPoolUsed} / {capacity.Sprites.SharedPoolCapacity} bytes\n" +
+                $"Used by: {string.Join(", ", _document.UsedBy)}";
+        }
+        else
+        {
+            UpdateByteBudget(layoutUsed, _document.OriginalLayoutLength, spriteUsed, _document.OriginalEnemyLength);
+            SpaceText.Text = $"Layout: {layoutUsed} / {_document.OriginalLayoutLength} bytes\n" +
+                             $"Sprites: {spriteUsed} / {_document.OriginalEnemyLength} bytes\n" +
+                             $"Used by: {string.Join(", ", _document.UsedBy)}";
+        }
+    }
+
+    private void UpdateByteBudget(Prg1AreaCapacity capacity)
+    {
+        var fits = capacity.Layout.Fits && capacity.Sprites.Fits;
+        ByteBudgetText.Text = $"Level {capacity.Layout.Used}/{capacity.Layout.MaximumStreamLength} · " +
+                              $"Sprites {capacity.Sprites.Used}/{capacity.Sprites.MaximumStreamLength}";
+        ByteBudgetText.Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(
+            fits ? "#9FB0C4" : "#FF6B6B"));
+        ToolTip.SetTip(ByteBudgetText,
+            $"Vanilla PRG1 shared capacity. Layout pool: {capacity.Layout.SharedPoolUsed}/{capacity.Layout.SharedPoolCapacity} bytes in PRG{capacity.LayoutBank}; " +
+            $"sprite pool: {capacity.Sprites.SharedPoolUsed}/{capacity.Sprites.SharedPoolCapacity} bytes in PRG6." +
+            (fits ? string.Empty : " The current project cannot be allocated; Play and Export will show the same allocator error."));
     }
 
     private void UpdateByteBudget(int layoutUsed, int layoutCapacity, int enemyUsed, int enemyCapacity)
@@ -2902,6 +2935,7 @@ public sealed partial class MainWindow : Window
         ByteBudgetText.Foreground = layoutLeft < 0 || enemyLeft < 0
             ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FF6B6B"))
             : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#9FB0C4"));
+        ToolTip.SetTip(ByteBudgetText, "This ROM profile uses its verified original stream slots.");
     }
 
     private void AddDiagnostics(IEnumerable<Diagnostic> diagnostics)

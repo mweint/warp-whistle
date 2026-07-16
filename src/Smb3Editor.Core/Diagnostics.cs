@@ -30,6 +30,9 @@ public sealed class OperationResult<T>
         new(value, diagnostics?.ToArray() ?? []);
 
     public static OperationResult<T> Failure(params Diagnostic[] diagnostics) => new(default, diagnostics);
+
+    internal static OperationResult<T> FailureWithValue(T value, IEnumerable<Diagnostic> diagnostics) =>
+        new(value, diagnostics.ToArray());
 }
 
 public static class Diagnostics
@@ -38,4 +41,3 @@ public static class Diagnostics
     public static Diagnostic Warning(string code, string message) => new(DiagnosticSeverity.Warning, code, message);
     public static Diagnostic Info(string code, string message) => new(DiagnosticSeverity.Information, code, message);
 }
-

@@ -85,7 +85,7 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
                 diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_TARGET", "The selected level is not a verified PRG1 catalog target.")).ToArray());
         }
 
-        if (!TryGetPointers(source, verifiedLevel, out var layoutPointer, out var enemyPointer, out var reason))
+        if (!TryGetPointers(source, compiledRom.RomBytes, verifiedLevel, out var layoutPointer, out var enemyPointer, out var reason))
         {
             return OperationResult<DirectLevelTestArtifact>.Failure(
                 diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_POINTER", reason!)).ToArray());
@@ -166,13 +166,52 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         return OperationResult<string>.Success("Temporary direct-level ROM verified.");
     }
 
-    private static bool TryGetPointers(RomImage source, LevelLocation level, out ushort layoutPointer, out ushort enemyPointer, out string? reason)
+    private static bool TryGetPointers(
+        RomImage source,
+        byte[] compiledBytes,
+        LevelLocation level,
+        out ushort layoutPointer,
+        out ushort enemyPointer,
+        out string? reason)
     {
         layoutPointer = 0;
         enemyPointer = 0;
         reason = null;
-        var layoutBank = (level.LayoutOffset - source.PrgOffset) / 0x2000;
-        var enemyBank = (level.EnemyOffset - source.PrgOffset) / 0x2000;
+        var sourceGraph = Prg1ReferenceIndexBuilder.Build(source);
+        var compiledGraph = Prg1ReferenceIndexBuilder.BuildCurrent(source, compiledBytes);
+        if (!sourceGraph.IsSuccess || !compiledGraph.IsSuccess)
+        {
+            reason = "The compiled ROM's level-reference graph could not be verified for direct testing.";
+            return false;
+        }
+
+        var originalLayout = new Prg1LayoutStreamId(level.LayoutOffset, level.Tileset);
+        var originalEnemy = new Prg1EnemyStreamId(level.EnemyOffset);
+        var matchingRoots = sourceGraph.Value!.Roots
+            .Where(root => root.Layout == originalLayout && root.Enemy == originalEnemy)
+            .ToArray();
+        if (matchingRoots.Length == 0)
+        {
+            reason = $"{level.DisplayName} has no verified source root for direct testing.";
+            return false;
+        }
+
+        var resolvedRoots = matchingRoots
+            .Select(root => compiledGraph.Value!.Roots.SingleOrDefault(item => item.Ordinal == root.Ordinal))
+            .Where(static root => root is not null)
+            .Select(static root => root!)
+            .Select(static root => (root.Layout, root.Enemy))
+            .Distinct()
+            .ToArray();
+        if (resolvedRoots.Length != 1 || resolvedRoots[0].Enemy is not { } resolvedEnemy)
+        {
+            reason = $"{level.DisplayName}'s compiled roots do not resolve to one verified layout and sprite stream.";
+            return false;
+        }
+
+        var resolvedLayout = resolvedRoots[0].Layout;
+        var layoutBank = (resolvedLayout.FileOffset - source.PrgOffset) / 0x2000;
+        var enemyBank = (resolvedEnemy.FileOffset - source.PrgOffset) / 0x2000;
         var expectedLayoutBank = level.Tileset switch
         {
             0 => 11, 1 => 15, 2 => 21, 3 => 16, 4 => 17, 5 => 19, 6 => 18, 7 => 18,
@@ -185,8 +224,8 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
             return false;
         }
 
-        layoutPointer = (ushort)(0xA000 + ((level.LayoutOffset - source.PrgOffset) & 0x1FFF));
-        enemyPointer = (ushort)(0xC000 + ((level.EnemyOffset - source.PrgOffset) & 0x1FFF));
+        layoutPointer = (ushort)(0xA000 + ((resolvedLayout.FileOffset - source.PrgOffset) & 0x1FFF));
+        enemyPointer = (ushort)(0xC000 + ((resolvedEnemy.FileOffset - source.PrgOffset) & 0x1FFF));
         return true;
     }
 
