@@ -81,7 +81,7 @@ public sealed record GeneratorDefinition(
 
         if (element.GeneratorId == 43)
         {
-            return new("Ice Brick Run", GeneratorConstraint.HorizontalRun,
+            return new("White Turtle Bricks", GeneratorConstraint.HorizontalRun,
                 CanMoveX: true, CanMoveY: true, CanResizeRight: true, ParameterName: "Length");
         }
 
@@ -153,7 +153,7 @@ public static class GeneratorDefaults
         // Values below three create the wrapped, giant form.
         1 when generatorId is >= 4 and <= 7 => 3,
         // These generators decrement with BNE, so zero would wrap to 256.
-        _ when generatorId is 9 or 13 or 14 or 26 or 27 or 30 or 31 or 42 or 43 or 44 => 1,
+        _ when generatorId is 9 or 13 or 14 or 26 or 27 or 30 or 31 or 42 or 44 => 1,
         _ => 0
     };
 

@@ -17,6 +17,7 @@ public sealed class LevelCodecTests
         Assert.Equal(3, GeneratorDefaults.ClampParameter(1, 4, 0)); // Floating block cannot wrap
         Assert.Equal(1, GeneratorDefaults.ClampExtraParameter(1, 11, 0)); // Ground cannot wrap
         Assert.Equal(0, GeneratorDefaults.ClampParameter(1, 15, 0)); // Valid one-tile form remains valid
+        Assert.Equal(0, GeneratorDefaults.ClampParameter(1, 43, 0)); // White Turtle Bricks: $00 is one tile
         Assert.Equal(1, GeneratorDefaults.ClampParameter(1, 42, 0)); // Orange block run cannot wrap
     }
 
@@ -37,6 +38,21 @@ public sealed class LevelCodecTests
         Assert.True(definition.CanResizeRight);
         Assert.True(definition.TopResizePreservesBottom);
         Assert.True(definition.HorizontalSizeUsesExtraParameter);
+    }
+
+    [Fact]
+    public void WhiteTurtleBricksUseTheValidOneTileForm()
+    {
+        var document = CreateDocument() with
+        {
+            Elements = [new LevelElement(0, LevelElementKind.VariableGenerator, 43, 4, 8, 0, null, 8, 4, 4, 8)]
+        };
+
+        var definition = GeneratorDefinition.For(document, document.Elements[0]);
+
+        Assert.Equal("White Turtle Bricks", definition.Name);
+        Assert.True(definition.CanResizeRight);
+        Assert.Equal(0, GeneratorDefaults.Parameter(document.Tileset, 43));
     }
 
     [Fact]
