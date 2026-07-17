@@ -31,12 +31,11 @@
           <MenuItem Header="Open Project" Click="OpenProject_Click" />
           <MenuItem Header="Save Project" Click="SaveProject_Click" />
           <MenuItem Header="Open Workspace Folder" Click="OpenWorkspace_Click" />
+          <MenuItem Header="Setup wizard…" Click="OpenSetupWizard_Click" />
           <MenuItem x:Name="OpenTraceLogsMenuItem" Header="Open Trace Logs" Click="OpenTraceLogs_Click" />
           <MenuItem Header="Open Legacy Preview Cache" Click="OpenLegacyPreviewCache_Click" />
           <Separator />
-          <MenuItem x:Name="EnhancedOutputMenuItem" Header="Enhanced output (experimental)" ToggleType="CheckBox"
-                    Click="EnhancedOutputMenuItem_Click"
-                    ToolTip.Tip="Creates a battery-backed 512 KiB MMC3 ROM. Vanilla output remains the default." />
+          <MenuItem Header="Project settings" Click="OpenProjectSettings_Click" />
           <MenuItem Header="Export ROM" Click="ExportRom_Click" />
           <MenuItem Header="Export BPS" Click="ExportBps_Click" />
         </MenuItem>
@@ -108,16 +107,8 @@
         <ComboBox x:Name="OverworldScreenBox" Width="112" SelectionChanged="OverworldScreenBox_SelectionChanged" />
         <ToggleButton x:Name="OverworldAnimationToggle" Content="Animate" Click="OverworldAnimationToggle_Click" ToolTip.Tip="Animate overworld tiles" />
         <Button x:Name="OverworldPalettesButton" Content="Palettes" Click="OpenOverworldPaletteEditor_Click" />
-        <SplitButton x:Name="OverworldOverlaysButton" Content="Overlays">
-          <SplitButton.Flyout><MenuFlyout Placement="Bottom">
-            <MenuItem Header="Show all" Click="OverworldShowAllOverlays_Click" />
-            <MenuItem Header="Hide all" Click="OverworldHideAllOverlays_Click" />
-            <Separator />
-            <MenuItem x:Name="OverworldShowEntrancesMenuItem" Header="Entrances" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
-            <MenuItem x:Name="OverworldShowLocksMenuItem" Header="Locks / bridges" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
-            <MenuItem x:Name="OverworldShowSpritesMenuItem" Header="Sprites" ToggleType="CheckBox" IsChecked="True" Click="OverworldOverlayPart_Click" />
-          </MenuFlyout></SplitButton.Flyout>
-        </SplitButton>
+        <ToggleButton x:Name="OverworldOverlaysToggle" Content="Hide overlays" IsChecked="True"
+                      Click="OverworldOverlaysToggle_Click" ToolTip.Tip="Show or hide entrances, locks, and map sprites" />
         <TextBlock x:Name="OverworldPageSummary" VerticalAlignment="Center" Foreground="#9FB0C4" Margin="12,0,0,0" />
         <SplitButton Content="Pages">
           <SplitButton.Flyout><MenuFlyout Placement="Bottom">
@@ -278,12 +269,14 @@
               <Grid>
                 <StackPanel x:Name="OverworldNodeEditor" IsVisible="False" Spacing="5">
                   <TextBlock x:Name="OverworldNodeTitle" FontWeight="SemiBold" />
-                  <TextBlock Text="Destination" Foreground="#9FB0C4" FontSize="12" />
+                  <TextBlock Text="Destination level or fortress" Foreground="#9FB0C4" FontSize="12" />
                   <local:SearchableDropDown x:Name="OverworldNodeLevelList" SelectionChanged="OverworldNodeLevelList_SelectionChanged" />
+                  <Button Content="Delete entrance" HorizontalAlignment="Left" Click="OverworldDeleteNode_Click" />
                 </StackPanel>
                 <StackPanel x:Name="OverworldNodeHelpEditor" IsVisible="False" Spacing="5">
                   <TextBlock Text="Entrances" FontWeight="SemiBold" />
-                  <TextBlock Text="Add: click an empty map tile.&#x0a;Select: click an outlined entrance.&#x0a;Move: drag its outline.&#x0a;Delete: select it and press Delete.&#x0a;Destination: select an entrance, then use its destination selector." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                  <TextBlock Text="Add: click an empty map tile.&#x0a;Select: click an outlined entrance.&#x0a;Move: drag its outline.&#x0a;Delete: select it, then press Delete or use Delete entrance.&#x0a;Destination: choose any level or a clearly labelled fortress." TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
+                  <TextBlock x:Name="OverworldNodeCapacityText" TextWrapping="Wrap" Foreground="#9FB0C4" FontSize="12" />
                 </StackPanel>
                 <StackPanel x:Name="OverworldLockEditor" IsVisible="False" Spacing="5">
                   <TextBlock x:Name="OverworldLockTitle" FontWeight="SemiBold" />
@@ -371,7 +364,27 @@
     <Border Grid.Row="4" Background="#111B28" BorderBrush="#31445A" BorderThickness="0,1,0,0" Padding="10,6">
       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <TextBlock x:Name="RomStatusText" Text="No ROM loaded" TextWrapping="Wrap" Foreground="#9FB0C4" />
-        <TextBlock x:Name="ByteBudgetText" Grid.Column="1" VerticalAlignment="Center" Foreground="#9FB0C4" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <StackPanel x:Name="TileBudgetPanel" Spacing="2">
+            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="6">
+              <TextBlock x:Name="TileBudgetLabel" Text="Tiles" FontSize="11" Foreground="#9FB0C4" />
+              <TextBlock x:Name="TileBudgetCount" Grid.Column="1" FontSize="11" Foreground="#D7E2EF" />
+            </Grid>
+            <ProgressBar x:Name="TileBudgetBar" Width="56" MinWidth="56" MaxWidth="56" Height="5" Minimum="0"
+                         HorizontalAlignment="Left" ShowProgressText="False" />
+          </StackPanel>
+          <StackPanel x:Name="SpriteBudgetPanel" Spacing="2">
+            <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="6">
+              <TextBlock x:Name="SpriteBudgetLabel" Text="Sprites" FontSize="11" Foreground="#9FB0C4" />
+              <TextBlock x:Name="SpriteBudgetCount" Grid.Column="1" FontSize="11" Foreground="#D7E2EF" />
+            </Grid>
+            <ProgressBar x:Name="SpriteBudgetBar" Width="56" MinWidth="56" MaxWidth="56" Height="5" Minimum="0"
+                         HorizontalAlignment="Left" ShowProgressText="False" />
+          </StackPanel>
+          <Border x:Name="StorageBudgetBadge" Background="#203247" BorderBrush="#46627E" BorderThickness="1" CornerRadius="3" Padding="7,3" VerticalAlignment="Center">
+            <TextBlock x:Name="StorageBudgetText" Text="Original limits" FontSize="11" Foreground="#B8C8D9" />
+          </Border>
+        </StackPanel>
       </Grid>
     </Border>
 

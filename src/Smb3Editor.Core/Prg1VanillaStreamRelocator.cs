@@ -104,6 +104,11 @@ internal static class Prg1VanillaStreamRelocator
         var authenticated = authenticatedResult.Value!;
         var layouts = new Dictionary<Prg1LayoutStreamId, StreamMutation<Prg1LayoutStreamId>>();
         var enemies = new Dictionary<Prg1EnemyStreamId, StreamMutation<Prg1EnemyStreamId>>();
+        // A map edit can intentionally remove an entrance while retaining that
+        // area's project data. It has no current pointer site, so it cannot be
+        // relocated; preserve a fitting edit in its authenticated source slot.
+        var detachedLayouts = new Dictionary<Prg1LayoutStreamId, StreamMutation<Prg1LayoutStreamId>>();
+        var detachedEnemies = new Dictionary<Prg1EnemyStreamId, StreamMutation<Prg1EnemyStreamId>>();
 
         foreach (var pair in project.ModifiedAreas.OrderBy(static item => item.Key, StringComparer.Ordinal))
         {
@@ -123,6 +128,29 @@ internal static class Prg1VanillaStreamRelocator
             var enemyId = new Prg1EnemyStreamId(location.EnemyOffset);
             var graphLayout = before.Layouts.SingleOrDefault(item => item.Id == layoutId);
             var graphEnemy = before.Enemies.SingleOrDefault(item => item.Id == enemyId);
+            var sourceLayout = authenticated.Layouts.SingleOrDefault(item => item.Id == layoutId);
+            var sourceEnemy = authenticated.Enemies.SingleOrDefault(item => item.Id == enemyId);
+            if (graphLayout is null && graphEnemy is null && sourceLayout is { IsRelocatable: true } && sourceEnemy is { IsRelocatable: true })
+            {
+                if (encodedLayout.Value!.Length > sourceLayout.Length || encodedEnemies.Value!.Length > sourceEnemy.Length)
+                {
+                    diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_GROWTH",
+                        $"{pair.Value.DisplayName} is not assigned to the current overworld and cannot grow until an entrance points to it."));
+                    continue;
+                }
+                if (!encodedLayout.Value.AsSpan(0, 4).SequenceEqual(source.Bytes.AsSpan(layoutId.FileOffset, 4)))
+                {
+                    diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_HEADER",
+                        $"{pair.Value.DisplayName} is not assigned to the current overworld and changes alternate-area pointers."));
+                    continue;
+                }
+
+                AddMutation(detachedLayouts, layoutId, encodedLayout.Value, sourceLayout.Length, pair.Value.DisplayName, diagnostics, "layout");
+                AddMutation(detachedEnemies, enemyId, encodedEnemies.Value, sourceEnemy.Length, pair.Value.DisplayName, diagnostics, "sprite");
+                diagnostics.Add(Diagnostics.Warning("RELOC_UNREFERENCED_AREA",
+                    $"{pair.Value.DisplayName} is not assigned to the current overworld. Its fitting data is retained, but it is unreachable until an entrance points to it."));
+                continue;
+            }
             if (graphLayout is null || !graphLayout.IsRelocatable)
             {
                 diagnostics.Add(Diagnostics.Error("RELOC_LAYOUT_GRAPH",
@@ -175,12 +203,43 @@ internal static class Prg1VanillaStreamRelocator
 
         var layoutDestinations = before.Layouts.ToDictionary(static stream => stream.Id, static stream => stream.Id);
         var enemyDestinations = before.Enemies.ToDictionary(static stream => stream.Id, static stream => stream.Id);
+        var sharedSlotLayoutIds = layouts.Values
+            // Merely opening an untouched stock area must not detach a shared
+            // physical interpretation. Separation is required only when that
+            // area's encoded bytes actually differ from the current ROM.
+            .Where(mutation =>
+                !mutation.Bytes.AsSpan().SequenceEqual(currentBytes.AsSpan(mutation.Id.FileOffset, mutation.OriginalLength)) &&
+                HasSharedPhysicalLayoutSlot(before.Layouts, mutation.Id))
+            .Select(static mutation => mutation.Id)
+            .ToHashSet();
+        var relocatingEnemyIds = enemies.Values
+            .Where(static mutation => mutation.RequiresRelocation)
+            .Select(static mutation => mutation.Id)
+            .ToImmutableHashSet();
+        var requestedLayoutDetachments = layouts.Values
+            .Where(mutation => mutation.RequiresRelocation || sharedSlotLayoutIds.Contains(mutation.Id))
+            .Select(static mutation => mutation.Id)
+            .Concat(LayoutsContainingSharedEnemyPointerSites(before, relocatingEnemyIds));
+        var detachedLayoutIds = ExpandLayoutDetachmentClosure(before, requestedLayoutDetachments);
         var pinned = FindPinnedTargets(before);
-        var layoutRegions = BuildLayoutRegions(authenticated, before, layoutPayloads, pinned.Layouts, diagnostics);
-        var enemyRegion = BuildEnemyRegion(authenticated, before, enemyPayloads, pinned.Enemies, diagnostics);
-        var compactLayoutBanks = layouts.Values.Where(static mutation => mutation.RequiresRelocation)
-            .Select(mutation => LayoutBank(mutation.Id.ObjectSet)).ToHashSet();
+        var layoutRegions = BuildLayoutRegions(authenticated, before, layoutPayloads, pinned.Layouts,
+            detachedLayoutIds, diagnostics);
+        var enemyRegion = BuildEnemyRegion(authenticated, before, enemyPayloads, pinned.Enemies,
+            relocatingEnemyIds, diagnostics);
+        var compactLayoutBanks = detachedLayoutIds.Select(id => LayoutBank(id.ObjectSet)).ToHashSet();
         var compactEnemies = enemies.Values.Any(static mutation => mutation.RequiresRelocation);
+
+        foreach (var detached in detachedLayouts.Values)
+        {
+            if (compactLayoutBanks.Contains(LayoutBank(detached.Id.ObjectSet)))
+                diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_COMPACTION",
+                    $"{detached.DisplayNames} is not assigned to the current overworld, so its PRG bank cannot be compacted while its source slot must be retained."));
+        }
+        if (compactEnemies && detachedEnemies.Count > 0)
+        {
+            diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_COMPACTION",
+                "An unassigned area still has retained sprite data, so PRG6 cannot be compacted until that area is assigned to an entrance or removed."));
+        }
 
         foreach (var bank in compactLayoutBanks.Order())
         {
@@ -198,16 +257,14 @@ internal static class Prg1VanillaStreamRelocator
                     $"{blocked.DisplayNames} cannot grow safely because one of its header references shares bytes with another stock layout interpretation."));
                 continue;
             }
-            if (region.HasPhysicalOverlaps)
-            {
-                diagnostics.Add(Diagnostics.Error("RELOC_LAYOUT_OVERLAP",
-                    $"PRG{bank} contains shared physical layout components; compacting this bank remains disabled until those components can be detached without changing either interpretation."));
-                continue;
-            }
             if (!CanAssignLayouts(region, layoutPayloads))
             {
-                diagnostics.Add(Diagnostics.Error("RELOC_LAYOUT_FULL",
-                    $"PRG{bank}'s compacted layout data needs {region.Used} bytes but its legal region has {region.Capacity}."));
+                var shared = layouts.Values.FirstOrDefault(mutation =>
+                    sharedSlotLayoutIds.Contains(mutation.Id) && LayoutBank(mutation.Id.ObjectSet) == bank);
+                diagnostics.Add(Diagnostics.Error(shared is null ? "RELOC_LAYOUT_FULL" : "RELOC_LAYOUT_SHARED_SLOT_FULL",
+                    shared is null
+                        ? $"PRG{bank}'s compacted layout data needs {region.Used} bytes but its legal region has {region.Capacity}."
+                        : $"{shared.DisplayNames} overlaps another stock layout. Separating both interpretations needs {region.Used} bytes in PRG{bank}, but the unchanged-size ROM has {region.Capacity}. Reduce or remove this edit, or use a future Enhanced expansion mode."));
                 continue;
             }
             AssignLayouts(region, layoutPayloads, layoutDestinations);
@@ -252,8 +309,8 @@ internal static class Prg1VanillaStreamRelocator
             }
         }
 
-        var capacity = BuildCapacityReport(project, source, layouts, enemies, layoutPayloads, enemyPayloads,
-            layoutRegions, enemyRegion, diagnostics);
+        var capacity = BuildCapacityReport(project, source, before, layouts, enemies, layoutPayloads, enemyPayloads,
+            layoutRegions, enemyRegion, sharedSlotLayoutIds, diagnostics);
 
         if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error))
             return OperationResult<Prg1RelocationBuild>.FailureWithValue(
@@ -324,6 +381,21 @@ internal static class Prg1VanillaStreamRelocator
         if (!VerifyGraph(before, afterResult.Value!, layoutDestinations, enemyDestinations, layouts, enemies, diagnostics))
             return OperationResult<Prg1RelocationBuild>.Failure(diagnostics.ToArray());
 
+        foreach (var detached in detachedLayouts.Values.OrderBy(static item => item.Id.FileOffset))
+        {
+            detached.Bytes.CopyTo(output, detached.Id.FileOffset);
+            if (output[detached.Id.FileOffset + detached.Bytes.Length - 1] != 0xFF)
+                diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_WRITE", $"{detached.DisplayNames}' retained layout has no terminator."));
+        }
+        foreach (var detached in detachedEnemies.Values.OrderBy(static item => item.Id.FileOffset))
+        {
+            detached.Bytes.CopyTo(output, detached.Id.FileOffset);
+            if (output[detached.Id.FileOffset + detached.Bytes.Length - 1] != 0xFF)
+                diagnostics.Add(Diagnostics.Error("RELOC_UNREFERENCED_WRITE", $"{detached.DisplayNames}' retained sprite stream has no terminator."));
+        }
+        if (diagnostics.Any(static item => item.Severity == DiagnosticSeverity.Error))
+            return OperationResult<Prg1RelocationBuild>.Failure(diagnostics.ToArray());
+
         foreach (var mutation in layouts.Values.OrderBy(static item => item.Id.FileOffset))
         {
             var destination = layoutDestinations[mutation.Id];
@@ -351,12 +423,14 @@ internal static class Prg1VanillaStreamRelocator
     private static Prg1VanillaCapacityReport BuildCapacityReport(
         ProjectDocumentV2 project,
         RomImage source,
+        Prg1ReferenceIndex graph,
         IReadOnlyDictionary<Prg1LayoutStreamId, StreamMutation<Prg1LayoutStreamId>> layouts,
         IReadOnlyDictionary<Prg1EnemyStreamId, StreamMutation<Prg1EnemyStreamId>> enemies,
         IReadOnlyDictionary<Prg1LayoutStreamId, byte[]> layoutPayloads,
         IReadOnlyDictionary<Prg1EnemyStreamId, byte[]> enemyPayloads,
         IReadOnlyDictionary<int, CompactRegion> layoutRegions,
         CompactRegion? enemyRegion,
+        IReadOnlySet<Prg1LayoutStreamId> sharedSlotLayoutIds,
         IReadOnlyList<Diagnostic> diagnostics)
     {
         var areas = new Dictionary<string, Prg1AreaCapacity>(StringComparer.Ordinal);
@@ -369,18 +443,29 @@ internal static class Prg1VanillaStreamRelocator
 
             var bank = LayoutBank(layoutId.ObjectSet);
             var hasLayoutRegion = layoutRegions.TryGetValue(bank, out var layoutRegion);
-            var layoutPinned = hasLayoutRegion && (layoutRegion!.PinnedLayouts.Contains(layoutId) || layoutRegion.HasPhysicalOverlaps);
+            var layoutRequiresRelocation = layout.RequiresRelocation || sharedSlotLayoutIds.Contains(layoutId);
+            var effectiveLayoutRegion = hasLayoutRegion
+                ? CapacityRegionFor(layoutRegion!, layoutId, layoutPayloads, graph)
+                : null;
+            var layoutPinned = effectiveLayoutRegion?.PinnedLayouts.Contains(layoutId) == true;
             var maximumLayoutLength = hasLayoutRegion && !layoutPinned
-                ? MaximumLayoutLength(layoutRegion!, layoutId, layoutPayloads)
+                ? MaximumLayoutLength(effectiveLayoutRegion!, layoutId, layoutPayloads)
                 : layout.OriginalLength;
-            var layoutFits = !layout.RequiresRelocation || hasLayoutRegion && !layoutPinned &&
-                CanAssignLayouts(layoutRegion!, layoutPayloads);
-            var enemyPinned = enemyRegion?.PinnedEnemies.Contains(enemyId) == true || enemyRegion?.HasPhysicalOverlaps == true;
-            var maximumEnemyLength = enemyRegion is null || enemyPinned
+            var layoutFits = !layoutRequiresRelocation || hasLayoutRegion && !layoutPinned &&
+                CanAssignLayouts(effectiveLayoutRegion!, layoutPayloads);
+            var enemyLayoutClosure = ExpandLayoutDetachmentClosure(graph,
+                LayoutsContainingSharedEnemyPointerSites(graph, [enemyId]));
+            var enemyPointerLayoutsFit = CanDetachLayouts(
+                enemyLayoutClosure, layoutRegions, layoutPayloads);
+            var effectiveEnemyRegion = enemyRegion is null
+                ? null
+                : CapacityEnemyRegionFor(enemyRegion, enemyId, enemyPayloads);
+            var enemyPinned = effectiveEnemyRegion?.HasPhysicalOverlaps == true || !enemyPointerLayoutsFit;
+            var maximumEnemyLength = effectiveEnemyRegion is null || enemyPinned
                 ? enemy.OriginalLength
-                : MaximumEnemyLength(enemyRegion, enemyId, enemyPayloads);
-            var enemyFits = !enemy.RequiresRelocation || enemyRegion is not null && !enemyPinned &&
-                CanAssignEnemies(enemyRegion, enemyPayloads);
+                : MaximumEnemyLength(effectiveEnemyRegion, enemyId, enemyPayloads);
+            var enemyFits = !enemy.RequiresRelocation || effectiveEnemyRegion is not null && !enemyPinned &&
+                CanAssignEnemies(effectiveEnemyRegion, enemyPayloads);
 
             areas[pair.Key] = new Prg1AreaCapacity(
                 pair.Key,
@@ -390,16 +475,16 @@ internal static class Prg1VanillaStreamRelocator
                     layout.Bytes.Length,
                     layout.OriginalLength,
                     Math.Max(layout.OriginalLength, maximumLayoutLength),
-                    hasLayoutRegion ? layoutRegion!.Used : 0,
+                    effectiveLayoutRegion?.Used ?? 0,
                     hasLayoutRegion ? layoutRegion!.Capacity : 0,
-                    layout.RequiresRelocation,
+                    layoutRequiresRelocation,
                     layoutFits),
                 new Prg1StreamCapacity(
                     enemy.Bytes.Length,
                     enemy.OriginalLength,
                     Math.Max(enemy.OriginalLength, maximumEnemyLength),
-                    enemyRegion?.Used ?? 0,
-                    enemyRegion?.Capacity ?? 0,
+                    effectiveEnemyRegion?.Used ?? 0,
+                    effectiveEnemyRegion?.Capacity ?? 0,
                     enemy.RequiresRelocation,
                     enemyFits));
         }
@@ -411,6 +496,7 @@ internal static class Prg1VanillaStreamRelocator
         Prg1ReferenceIndex current,
         IReadOnlyDictionary<Prg1LayoutStreamId, byte[]> payloads,
         ImmutableHashSet<Prg1LayoutStreamId> pinned,
+        IReadOnlySet<Prg1LayoutStreamId> detachedSharedLayouts,
         List<Diagnostic> diagnostics)
     {
         var regions = new Dictionary<int, CompactRegion>();
@@ -436,7 +522,14 @@ internal static class Prg1VanillaStreamRelocator
             }
             var authenticatedStart = authenticatedStreams.Min(static stream => stream.Id.FileOffset);
             var start = manifest.Start;
-            var bankPinned = streams.Select(static stream => stream.Id).Where(pinned.Contains).ToImmutableHashSet();
+            var sharedLayouts = streams.Where(stream => streams.Any(other => other.Id != stream.Id &&
+                    other.Id.FileOffset < stream.Id.FileOffset + stream.Length &&
+                    stream.Id.FileOffset < other.Id.FileOffset + other.Length))
+                .Select(static stream => stream.Id).ToImmutableHashSet();
+            var structuralPinned = streams.Select(static stream => stream.Id).Where(pinned.Contains).ToImmutableHashSet();
+            var activeStructuralPinned = structuralPinned.Except(detachedSharedLayouts).ToImmutableHashSet();
+            var retainedSharedLayouts = sharedLayouts.Except(detachedSharedLayouts).ToImmutableHashSet();
+            var bankPinned = activeStructuralPinned.Union(retainedSharedLayouts).ToImmutableHashSet();
             var occupied = MergeIntervals(streams.Where(stream => bankPinned.Contains(stream.Id))
                 .Select(stream => (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)));
             var used = occupied.Sum(static interval => interval.End - interval.Start) +
@@ -460,7 +553,8 @@ internal static class Prg1VanillaStreamRelocator
             var hasOverlaps = MergeIntervals(streams.Select(stream =>
                     (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)))
                 .Sum(static interval => interval.End - interval.Start) < streams.Sum(static stream => stream.Length);
-            regions[group.Key] = new CompactRegion(group.Key, start, bankEnd, used, streams, [], bankPinned, [], hasOverlaps);
+            regions[group.Key] = new CompactRegion(group.Key, start, bankEnd, used, streams, [], bankPinned, [],
+                structuralPinned, sharedLayouts, hasOverlaps);
         }
         return regions.ToImmutableDictionary();
     }
@@ -470,6 +564,7 @@ internal static class Prg1VanillaStreamRelocator
         Prg1ReferenceIndex current,
         IReadOnlyDictionary<Prg1EnemyStreamId, byte[]> payloads,
         ImmutableHashSet<Prg1EnemyStreamId> pinned,
+        IReadOnlySet<Prg1EnemyStreamId> detachedEnemies,
         List<Diagnostic> diagnostics)
     {
         var streams = current.Enemies.Where(static stream => stream.IsRelocatable)
@@ -491,7 +586,8 @@ internal static class Prg1VanillaStreamRelocator
             diagnostics.Add(Diagnostics.Error("RELOC_ENEMY_REGION", "PRG6's sprite region starts outside its legal bank."));
             return null;
         }
-        var bankPinned = streams.Select(static stream => stream.Id).Where(pinned.Contains).ToImmutableHashSet();
+        var bankPinned = streams.Select(static stream => stream.Id).Where(pinned.Contains)
+            .Except(detachedEnemies).ToImmutableHashSet();
         var occupied = MergeIntervals(streams.Where(stream => bankPinned.Contains(stream.Id))
             .Select(stream => (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)));
         var used = occupied.Sum(static interval => interval.End - interval.Start) +
@@ -499,7 +595,118 @@ internal static class Prg1VanillaStreamRelocator
         var hasOverlaps = MergeIntervals(streams.Select(stream =>
                 (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)))
             .Sum(static interval => interval.End - interval.Start) < streams.Sum(static stream => stream.Length);
-        return new CompactRegion(EnemyBank, start, bankEnd, used, [], streams, [], bankPinned, hasOverlaps);
+        return new CompactRegion(EnemyBank, start, bankEnd, used, [], streams, [], bankPinned,
+            [], [], hasOverlaps);
+    }
+
+    private static CompactRegion CapacityRegionFor(
+        CompactRegion region,
+        Prg1LayoutStreamId id,
+        IReadOnlyDictionary<Prg1LayoutStreamId, byte[]> payloads,
+        Prg1ReferenceIndex graph)
+    {
+        if (!region.SharedLayouts.Contains(id) && !region.StructurallyPinnedLayouts.Contains(id)) return region;
+        var closure = ExpandLayoutDetachmentClosure(graph, [id]);
+        var pinned = region.PinnedLayouts.Except(closure).ToImmutableHashSet();
+        return region with { PinnedLayouts = pinned, Used = LayoutUsed(region.LayoutStreams, payloads, pinned) };
+    }
+
+    private static CompactRegion CapacityEnemyRegionFor(
+        CompactRegion region,
+        Prg1EnemyStreamId id,
+        IReadOnlyDictionary<Prg1EnemyStreamId, byte[]> payloads)
+    {
+        if (!region.PinnedEnemies.Contains(id)) return region;
+        var pinned = region.PinnedEnemies.Remove(id);
+        return region with { PinnedEnemies = pinned, Used = EnemyUsed(region.EnemyStreams, payloads, pinned) };
+    }
+
+    private static bool CanDetachLayouts(
+        IReadOnlySet<Prg1LayoutStreamId> closure,
+        IReadOnlyDictionary<int, CompactRegion> regions,
+        IReadOnlyDictionary<Prg1LayoutStreamId, byte[]> payloads)
+    {
+        foreach (var bankGroup in closure.GroupBy(id => LayoutBank(id.ObjectSet)))
+        {
+            if (!regions.TryGetValue(bankGroup.Key, out var region)) return false;
+            var pinned = region.PinnedLayouts.Except(bankGroup).ToImmutableHashSet();
+            var candidate = region with
+            {
+                PinnedLayouts = pinned,
+                Used = LayoutUsed(region.LayoutStreams, payloads, pinned)
+            };
+            if (!CanAssignLayouts(candidate, payloads)) return false;
+        }
+        return true;
+    }
+
+    private static IEnumerable<Prg1LayoutStreamId> LayoutsContainingSharedEnemyPointerSites(
+        Prg1ReferenceIndex graph,
+        IEnumerable<Prg1EnemyStreamId> enemyIds)
+    {
+        var requested = enemyIds.ToImmutableHashSet();
+        var layouts = graph.Layouts.Where(static stream => stream.IsRelocatable).ToArray();
+        return graph.Enemies.Where(stream => requested.Contains(stream.Id))
+            .SelectMany(static stream => stream.PointerSites)
+            .Where(site => site.Origin == Prg1PointerSiteOrigin.LayoutHeader &&
+                           IsSharedLayoutPointerSite(layouts, site))
+            .Select(static site => site.ContainingLayout!.Value)
+            .Distinct();
+    }
+
+    private static bool IsSharedLayoutPointerSite(
+        IReadOnlyCollection<Prg1LayoutStream> layouts,
+        Prg1PointerSite site) =>
+        site.ContainingLayout is { } containing && layouts.Any(other => other.Id != containing &&
+            site.FileOffset < other.Id.FileOffset + other.Length &&
+            site.FileOffset + 2 > other.Id.FileOffset);
+
+    private static ImmutableHashSet<Prg1LayoutStreamId> ExpandLayoutDetachmentClosure(
+        Prg1ReferenceIndex graph,
+        IEnumerable<Prg1LayoutStreamId> initial)
+    {
+        var streams = graph.Layouts.Where(static stream => stream.IsRelocatable).ToArray();
+        var detached = initial.ToImmutableHashSet().ToBuilder();
+        var pending = new Queue<Prg1LayoutStreamId>(detached);
+        while (pending.TryDequeue(out var target))
+        {
+            var stream = streams.FirstOrDefault(item => item.Id == target);
+            if (stream is null) continue;
+            foreach (var site in stream.PointerSites.Where(static site =>
+                         site.Origin == Prg1PointerSiteOrigin.LayoutHeader && site.ContainingLayout is not null))
+            {
+                var containing = site.ContainingLayout!.Value;
+                var sharedSite = streams.Any(other => other.Id != containing &&
+                    site.FileOffset < other.Id.FileOffset + other.Length &&
+                    site.FileOffset + 2 > other.Id.FileOffset);
+                if (sharedSite && detached.Add(containing)) pending.Enqueue(containing);
+            }
+        }
+        return detached.ToImmutable();
+    }
+
+    private static int LayoutUsed(
+        IEnumerable<Prg1LayoutStream> streams,
+        IReadOnlyDictionary<Prg1LayoutStreamId, byte[]> payloads,
+        IReadOnlySet<Prg1LayoutStreamId> pinned)
+    {
+        var streamArray = streams.ToArray();
+        var occupied = MergeIntervals(streamArray.Where(stream => pinned.Contains(stream.Id))
+            .Select(stream => (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)));
+        return occupied.Sum(static interval => interval.End - interval.Start) +
+               streamArray.Where(stream => !pinned.Contains(stream.Id)).Sum(stream => payloads[stream.Id].Length);
+    }
+
+    private static int EnemyUsed(
+        IEnumerable<Prg1EnemyStream> streams,
+        IReadOnlyDictionary<Prg1EnemyStreamId, byte[]> payloads,
+        IReadOnlySet<Prg1EnemyStreamId> pinned)
+    {
+        var streamArray = streams.ToArray();
+        var occupied = MergeIntervals(streamArray.Where(stream => pinned.Contains(stream.Id))
+            .Select(stream => (stream.Id.FileOffset, stream.Id.FileOffset + stream.Length)));
+        return occupied.Sum(static interval => interval.End - interval.Start) +
+               streamArray.Where(stream => !pinned.Contains(stream.Id)).Sum(stream => payloads[stream.Id].Length);
     }
 
     private static (ImmutableHashSet<Prg1LayoutStreamId> Layouts, ImmutableHashSet<Prg1EnemyStreamId> Enemies)
@@ -723,6 +930,18 @@ internal static class Prg1VanillaStreamRelocator
         return false;
     }
 
+    private static bool HasSharedPhysicalLayoutSlot(
+        IEnumerable<Prg1LayoutStream> streams,
+        Prg1LayoutStreamId id)
+    {
+        var current = streams.FirstOrDefault(stream => stream.Id == id);
+        if (current is null) return false;
+        var start = current.Id.FileOffset;
+        var end = checked(start + current.Length);
+        return streams.Any(stream => stream.Id != id &&
+            stream.Id.FileOffset < end && start < checked(stream.Id.FileOffset + stream.Length));
+    }
+
     private static void AddMutation<TId>(
         Dictionary<TId, StreamMutation<TId>> mutations,
         TId id,
@@ -794,6 +1013,8 @@ internal static class Prg1VanillaStreamRelocator
         ImmutableArray<Prg1EnemyStream> EnemyStreams,
         ImmutableHashSet<Prg1LayoutStreamId> PinnedLayouts,
         ImmutableHashSet<Prg1EnemyStreamId> PinnedEnemies,
+        ImmutableHashSet<Prg1LayoutStreamId> StructurallyPinnedLayouts,
+        ImmutableHashSet<Prg1LayoutStreamId> SharedLayouts,
         bool HasPhysicalOverlaps)
     {
         public int Length => EndExclusive - Start;

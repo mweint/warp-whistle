@@ -2,31 +2,28 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PublishDirectory,
     [Parameter(Mandatory = $true)]
-    [string]$Assembler,
-    [Parameter(Mandatory = $true)]
     [string]$OutputDirectory
 )
 
 $ErrorActionPreference = "Stop"
 $PublishDirectory = (Resolve-Path $PublishDirectory).Path
-$Assembler = (Resolve-Path $Assembler).Path
-$root = Join-Path $OutputDirectory "WarpWhistle"
+$OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
+$root = [IO.Path]::GetFullPath((Join-Path $OutputDirectory "WarpWhistle"))
+if (-not $root.StartsWith($OutputDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Portable package root escaped its output directory."
+}
+if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 New-Item -ItemType Directory -Force $root | Out-Null
 
-# A single-file publish needs only its executable and explicit app resources.
+# A single-file publish plus the canonical external runtime content.
 # Native PDBs are diagnostic symbols and must never become portable-release files.
 Copy-Item -LiteralPath (Join-Path $PublishDirectory "WarpWhistle.exe") -Destination $root -Force
-foreach ($folder in @("Resources", "Tools")) {
+Copy-Item -LiteralPath (Join-Path $PublishDirectory "items.json") -Destination $root -Force
+foreach ($folder in @("patches", "tools")) {
     $source = Join-Path $PublishDirectory $folder
-    if (Test-Path $source) {
-        Copy-Item -LiteralPath $source -Destination (Join-Path $root $folder) -Recurse -Force
-    }
+    if (-not (Test-Path $source)) { throw "Publish output is missing $folder." }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $root $folder) -Recurse -Force
 }
-New-Item -ItemType Directory -Force (Join-Path $root "Tools/asm6f") | Out-Null
-Copy-Item -LiteralPath $Assembler -Destination (Join-Path $root "Tools/asm6f/asm6f_64.exe") -Force
-$license = Join-Path (Split-Path -Parent $Assembler) "readme-original.txt"
-if (-not (Test-Path $license)) { throw "Assembler license is missing beside $Assembler" }
-Copy-Item -LiteralPath $license -Destination (Join-Path $root "Tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt") -Force
 
 foreach ($folder in @("ROMs", "Emulators", "Projects", "Exports", "Data")) {
     New-Item -ItemType Directory -Force (Join-Path $root $folder) | Out-Null
@@ -46,10 +43,10 @@ The ZIP does not include ROMs, emulators, or Nintendo assets.
 
 foreach ($required in @(
     "WarpWhistle.exe",
-    "Resources/items.json",
-    "Resources/patches/builtins/patch.json",
-    "Tools/asm6f/asm6f_64.exe",
-    "Tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt"
+    "items.json",
+    "patches/builtins/patch.json",
+    "tools/asm6f/asm6f_64.exe",
+    "tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt"
 )) {
     if (-not (Test-Path (Join-Path $root $required))) {
         throw "Portable package is missing required content: $required"

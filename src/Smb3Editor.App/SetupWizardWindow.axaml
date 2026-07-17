@@ -1,0 +1,49 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Smb3Editor.App.SetupWizardWindow"
+        Title="Set up Warp Whistle"
+        Width="650" Height="540" MinWidth="540" MinHeight="470"
+        WindowStartupLocation="CenterOwner" CanResize="False">
+  <Border Background="#111923" Padding="28">
+    <Grid RowDefinitions="Auto,*,Auto" RowSpacing="18">
+      <StackPanel Spacing="4">
+        <TextBlock Classes="title" Text="Welcome to Warp Whistle" />
+        <TextBlock Foreground="#9FB0C4" Text="Set up your ROM and optional play-testing emulator. You can change these later." TextWrapping="Wrap" />
+      </StackPanel>
+      <ScrollViewer Grid.Row="1">
+        <StackPanel Spacing="10">
+          <TextBlock Classes="section" Text="1. Choose your SMB3 ROM" />
+          <TextBlock Text="Choose how Warp Whistle should access your legally obtained ROM." TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="18">
+            <RadioButton x:Name="LocalRomOption" GroupName="RomSource" Content="Use a local file" IsChecked="True" Click="RomSourceChanged" />
+            <RadioButton x:Name="UrlRomOption" GroupName="RomSource" Content="Use an HTTPS URL" Click="RomSourceChanged" />
+          </StackPanel>
+          <Grid x:Name="LocalRomPanel" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox x:Name="RomPathBox" PlaceholderText="Path to your .nes or .rom file" />
+            <Button Grid.Column="1" Content="Browse..." Click="ChooseRom_Click" />
+          </Grid>
+          <StackPanel x:Name="UrlRomPanel" IsVisible="False" Spacing="5">
+            <TextBox x:Name="RomUrlBox" PlaceholderText="https://your-authorized-host.example/smb3.nes" />
+            <TextBlock Foreground="#9FB0C4" FontSize="12" Text="Warp Whistle will download and verify a copy in the ROMs folder." TextWrapping="Wrap" />
+          </StackPanel>
+          <TextBlock Foreground="#9FB0C4" FontSize="12" Text="Only verified US PRG0 or PRG1 ROMs are accepted." TextWrapping="Wrap" />
+
+          <TextBlock Classes="section" Text="2. Emulator (optional)" Margin="0,12,0,0" />
+          <TextBlock Text="Download MesenCE (GPLv3), or choose an emulator already installed." TextWrapping="Wrap" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="DownloadMesenButton" Content="Download MesenCE" Click="DownloadMesen_Click" />
+            <Button Content="Choose existing emulator..." Click="ChooseEmulator_Click" />
+          </StackPanel>
+          <TextBlock x:Name="EmulatorStatusText" Foreground="#9FB0C4" Text="No emulator selected. You can add one later." TextWrapping="Wrap" />
+          <Border Height="38">
+            <TextBlock x:Name="StatusText" Foreground="#F2B632" TextWrapping="Wrap" VerticalAlignment="Center" />
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
+      <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+        <Button x:Name="SkipButton" Content="Skip" Click="Skip_Click" />
+        <Button x:Name="FinishButton" Content="Finish setup" Click="Finish_Click" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

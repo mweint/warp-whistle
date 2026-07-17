@@ -33,10 +33,10 @@ public sealed class EnhancedMmc3RomBuilder
 
     public OperationResult<EnhancedMmc3Build> Build(ProjectDocumentV2 project, RomImage source, ReadOnlySpan<byte> compiledVanilla)
     {
-        if (project.OutputMode != RomOutputMode.EnhancedMmc3 || project.StorageMode != RomStorageMode.ExpandedBanks)
+        if (project.OutputMode != RomOutputMode.EnhancedMmc3)
         {
             return OperationResult<EnhancedMmc3Build>.Failure(
-                Diagnostics.Error("ENHANCED_MODE", "The Enhanced MMC3 builder requires ExpandedBanks storage mode."));
+                Diagnostics.Error("ENHANCED_MODE", "The Enhanced MMC3 builder requires Enhanced MMC3 output."));
         }
 
         if (!string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal) || source.Mapper != 4 || source.PrgLength != OriginalPrgBytes)

@@ -97,10 +97,22 @@ public static class ProjectStore
             {
                 project = MigrateV11(project, diagnostics);
             }
+            if (project.FormatVersion == 12)
+            {
+                project = MigrateV12(project, diagnostics);
+            }
             if (project.FormatVersion != ProjectDocumentV2.CurrentFormatVersion)
             {
                 return OperationResult<ProjectDocumentV2>.Failure(
                     Diagnostics.Error("PROJECT_VERSION", $"Project format {project.FormatVersion} is not supported."));
+            }
+
+            if ((project.Patches ?? PatchSettings.None).Get("enhanced-autosave-storage") is { EnabledByDefault: true } &&
+                project.OutputMode != RomOutputMode.EnhancedMmc3)
+            {
+                diagnostics.Add(Diagnostics.Warning(
+                    "PROJECT_ENHANCED_SAVE_MODE",
+                    "Enhanced Save Storage is included but requires Enhanced MMC3 output. Enable it in Project settings before export or play-test."));
             }
 
             if (Smb3Profiles.FindById(project.Source.ProfileId) is null)
@@ -260,5 +272,12 @@ public static class ProjectStore
         diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 11 to format 12 with vanilla overworld map sprites and transferable map pages."));
         return legacy with { FormatVersion = 12, OverworldMapSprites = [] };
     }
+
+    private static ProjectDocumentV2 MigrateV12(ProjectDocumentV2 legacy, List<Diagnostic> diagnostics)
+    {
+        diagnostics.Add(Diagnostics.Info("PROJECT_MIGRATED", "Migrated project format 12 to format 13; managed vanilla storage remains off until enabled."));
+        return legacy with { FormatVersion = 13, StorageMode = legacy.StorageMode };
+    }
+
 
 }

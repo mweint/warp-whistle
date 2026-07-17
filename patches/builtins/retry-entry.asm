@@ -2,6 +2,8 @@
 quick_retry_entry:
   ldx #$ff
   txs
+  ; Retain page $07 because it contains the persistent active-area and mapper
+  ; context restored by the retry flow.
   ldy #$06
   jsr $96ce
   inc $7955

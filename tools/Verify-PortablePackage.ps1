@@ -11,10 +11,10 @@ try {
     $paths = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
     $required = @(
         "WarpWhistle/WarpWhistle.exe",
-        "WarpWhistle/Resources/items.json",
-        "WarpWhistle/Resources/patches/builtins/patch.json",
-        "WarpWhistle/Tools/asm6f/asm6f_64.exe",
-        "WarpWhistle/Tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt",
+        "WarpWhistle/items.json",
+        "WarpWhistle/patches/builtins/patch.json",
+        "WarpWhistle/tools/asm6f/asm6f_64.exe",
+        "WarpWhistle/tools/asm6f/THIRD-PARTY-ASM6F-LICENSE.txt",
         "WarpWhistle/README.txt"
     )
     foreach ($path in $required) {

@@ -324,6 +324,49 @@ public sealed class RomImageTests
     }
 
     [Fact]
+    public void OptionalUserSuppliedPrg1RomCanTradeOneNodeSlotForANewFortressEntrance()
+    {
+        var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+
+        var loaded = RomImage.Load(path);
+        Assert.True(loaded.IsSuccess, string.Join(Environment.NewLine, loaded.Diagnostics));
+        var source = loaded.Value!;
+        if (source.Profile.Id != "us-prg1" || !source.Profile.Levels.TryGetValue("W1-F", out var fortress)) return;
+
+        var maps = Smb3OverworldParser.Parse(source);
+        Assert.True(maps.IsSuccess, string.Join(Environment.NewLine, maps.Diagnostics));
+        var worldOne = maps.Value![0];
+        var worldTwo = maps.Value![1];
+        var occupied = worldOne.LevelPointers.Select(node => (node.Screen, node.Column, node.Row)).ToHashSet();
+        var position = Enumerable.Range(0, worldOne.ScreenCount * OverworldDocument.ScreenWidth)
+            .Select(index => (Screen: index / OverworldDocument.ScreenWidth, Column: index % OverworldDocument.ScreenWidth, Row: OverworldDocument.FirstMapRow))
+            .First(candidate => !occupied.Contains(candidate));
+        var fortressNode = worldOne.LevelPointers[0] with
+        {
+            Index = worldOne.LevelPointers.Count,
+            Screen = position.Screen,
+            Column = position.Column,
+            Row = position.Row,
+            ObjectSet = fortress.Tileset,
+            LevelOffset = (ushort)(0xA000 + ((fortress.LayoutOffset - source.PrgOffset) & 0x1FFF)),
+            EnemyOffset = (ushort)(0xC000 + ((fortress.EnemyOffset - source.PrgOffset) & 0x1FFF))
+        };
+        var project = ProjectDocumentV2.Create(source)
+            .WithOverworldNodes(worldOne with { LevelPointers = worldOne.LevelPointers.Append(fortressNode).ToArray() })
+            .WithOverworldNodes(worldTwo with { LevelPointers = worldTwo.LevelPointers.Skip(1).ToArray() });
+
+        var compiled = new RomCompiler().Compile(project, source);
+        Assert.True(compiled.IsSuccess, string.Join(Environment.NewLine, compiled.Diagnostics));
+        var reparsed = Smb3OverworldParser.Parse(RomImage.CreateForTesting(path, compiled.Value!.RomBytes, source.Profile));
+        Assert.True(reparsed.IsSuccess, string.Join(Environment.NewLine, reparsed.Diagnostics));
+        Assert.Equal(worldOne.LevelPointers.Count + 1, reparsed.Value![0].LevelPointers.Count);
+        Assert.Equal(worldTwo.LevelPointers.Count - 1, reparsed.Value[1].LevelPointers.Count);
+        Assert.Contains(reparsed.Value[0].LevelPointers, node => node.ObjectSet == fortress.Tileset &&
+            node.LevelOffset == fortressNode.LevelOffset && node.EnemyOffset == fortressNode.EnemyOffset);
+    }
+
+    [Fact]
     public void OptionalUserSuppliedPrg1RomCompilesFixedSizeOverworldLockBridgeOverride()
     {
         var path = Environment.GetEnvironmentVariable("SMB3_TEST_ROM");

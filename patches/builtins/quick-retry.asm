@@ -10,7 +10,12 @@ quick_retry_exit:
   ldx $0726
   lda $0736,x
   beq quick_retry_original
+  jsr patch_resolve_flags
+  and #FLAG_INFINITE_LIVES
+  bne quick_retry_restart
   dec $0736,x
+
+quick_retry_restart:
   jmp $e911
 
 quick_retry_original:

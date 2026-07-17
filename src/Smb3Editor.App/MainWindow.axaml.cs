@@ -38,6 +38,10 @@ internal sealed record OverworldMapSpriteEntry(OverworldMapSpriteChoice Choice, 
 {
     public string ToolTip => Choice.Name;
 }
+internal sealed record OverworldNodeDestinationChoice(LevelLocation Level, bool IsFortress)
+{
+    public override string ToString() => IsFortress ? $"Fortress - {Level.DisplayName}" : Level.DisplayName;
+}
 internal sealed record DiagnosticListItem(string Text, IBrush Foreground);
 
 public sealed partial class MainWindow : Window
@@ -124,6 +128,7 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _overworldAnimationTimer = new() { Interval = TimeSpan.FromSeconds(1d / 60d) };
     private int _overworldAnimationFrame;
     private int _overworldAnimationTicks;
+    private bool _initialSetupShown;
 
     private static string LegacyPreviewCacheDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WarpWhistle", "preview-cache");
@@ -135,6 +140,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(string? startupRomPath)
     {
         InitializeComponent();
+        Opened += async (_, _) => await ShowInitialSetupIfNeededAsync();
         TracePlayLevelToggle.IsVisible = TraceToolsEnabled;
         OpenTraceLogsMenuItem.IsVisible = TraceToolsEnabled;
         WorkspacePaths.Configure(AppContext.BaseDirectory);
@@ -375,17 +381,18 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        _project = loaded.Value!;
-        _projectPath = path;
-        if (!OpenRom(_project.Source.RomPathHint, createProject: false))
+        var project = loaded.Value!;
+        var romPath = await ResolveProjectRomPathAsync(project.Source);
+        if (romPath is null)
         {
-            AddDiagnostics([Diagnostics.Error("PROJECT_ROM", "The project's source ROM is unavailable or no longer matches. Open the verified source ROM manually.")]);
+            AddDiagnostics([Diagnostics.Error("PROJECT_ROM", "This project needs its verified source ROM. Put it in the ROMs folder or select it when opening the project.")]);
             return;
         }
 
-        EmulatorPathBox.Text = _project.EditorState.EmulatorPath;
-        EmulatorArgumentsBox.Text = string.Join(Environment.NewLine, _project.EditorState.EmulatorArguments ?? ["{rom}"]);
-        SaveGlobalEmulatorSettings();
+        _project = project;
+        _projectPath = path;
+        if (!OpenRom(romPath, createProject: false)) return;
+
         EditorCanvas.Zoom = Math.Clamp(_project.EditorState.Zoom, 0.25, 8.0);
         if (_project.EditorState.LastAreaId is string area && _project.ModifiedAreas.TryGetValue(area, out var modified))
         {
@@ -394,6 +401,88 @@ public sealed partial class MainWindow : Window
         _savedProject = _project;
         _isProjectDirty = false;
         UpdateSaveState();
+    }
+
+    private async Task ShowInitialSetupIfNeededAsync()
+    {
+        if (_initialSetupShown || _appSettings.SetupCompleted == true) return;
+        _initialSetupShown = true;
+        await ShowSetupWizardAsync(openRomOnFinish: true);
+    }
+
+    private async void OpenSetupWizard_Click(object? sender, RoutedEventArgs e) =>
+        await ShowSetupWizardAsync(openRomOnFinish: _rom is null);
+
+    private async Task ShowSetupWizardAsync(bool openRomOnFinish)
+    {
+        var wizard = new SetupWizardWindow(_appSettings);
+        await wizard.ShowDialog(this);
+        if (wizard.Result is null) return;
+
+        _appSettings = wizard.Result;
+        AddDiagnostics(AppSettingsStore.Save(_appSettings).Diagnostics);
+        EmulatorPathBox.Text = _appSettings.EmulatorPath;
+        EmulatorArgumentsBox.Text = string.Join(Environment.NewLine, _appSettings.EmulatorArguments ?? ["{rom}"]);
+        if (openRomOnFinish && !string.IsNullOrWhiteSpace(_appSettings.LastRomPath) && File.Exists(_appSettings.LastRomPath))
+            OpenRom(_appSettings.LastRomPath, createProject: true);
+    }
+
+    private async Task<string?> ResolveProjectRomPathAsync(ProjectSource source)
+    {
+        var candidates = new List<string?>
+        {
+            _rom?.SourcePath,
+            _appSettings.LastRomPath
+        };
+        try
+        {
+            if (Directory.Exists(WorkspacePaths.RomsDirectory))
+            {
+                candidates.AddRange(Directory.EnumerateFiles(WorkspacePaths.RomsDirectory, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(static candidate =>
+                        string.Equals(Path.GetExtension(candidate), ".nes", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(Path.GetExtension(candidate), ".rom", StringComparison.OrdinalIgnoreCase)));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AddDiagnostics([Diagnostics.Warning("PROJECT_ROM_SEARCH", "The ROMs folder could not be searched.")]);
+        }
+        foreach (var candidate in candidates.Where(static item => !string.IsNullOrWhiteSpace(item))
+                     .Select(static item => item!)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(candidate)) continue;
+            var loaded = RomImage.Load(candidate);
+            if (loaded.IsSuccess && source.Matches(loaded.Value!)) return candidate;
+        }
+
+        var romsFolder = Directory.Exists(WorkspacePaths.RomsDirectory)
+            ? await StorageProvider.TryGetFolderFromPathAsync(WorkspacePaths.RomsDirectory)
+            : null;
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = $"Locate verified {Smb3Profiles.FindById(source.ProfileId)?.DisplayName ?? "SMB3"} ROM",
+            AllowMultiple = false,
+            SuggestedStartLocation = romsFolder,
+            FileTypeFilter = [new FilePickerFileType("NES ROM") { Patterns = ["*.nes", "*.rom"] }]
+        });
+        if (files.Count == 0) return null;
+
+        var selectedPath = files[0].Path.LocalPath;
+        var selected = RomImage.Load(selectedPath);
+        if (!selected.IsSuccess)
+        {
+            AddDiagnostics(selected.Diagnostics);
+            return null;
+        }
+        if (!source.Matches(selected.Value!))
+        {
+            AddDiagnostics([Diagnostics.Error("PROJECT_ROM_MISMATCH",
+                $"That ROM does not match this project. Expected {source.ProfileId}, SHA-1 {source.Sha1}.")]);
+            return null;
+        }
+        return selectedPath;
     }
 
     private async void SaveProject_Click(object? sender, RoutedEventArgs e)
@@ -1425,22 +1514,15 @@ public sealed partial class MainWindow : Window
 
     private void OverworldMapSpriteMode_Click(object? sender, RoutedEventArgs e) => SetOverworldEditMode(3);
 
-    private void OverworldShowAllOverlays_Click(object? sender, RoutedEventArgs e)
-    {
-        OverworldShowEntrancesMenuItem.IsChecked = OverworldShowLocksMenuItem.IsChecked = OverworldShowSpritesMenuItem.IsChecked = true;
-        ApplyOverworldOverlayVisibility();
-    }
-    private void OverworldHideAllOverlays_Click(object? sender, RoutedEventArgs e)
-    {
-        OverworldShowEntrancesMenuItem.IsChecked = OverworldShowLocksMenuItem.IsChecked = OverworldShowSpritesMenuItem.IsChecked = false;
-        ApplyOverworldOverlayVisibility();
-    }
-    private void OverworldOverlayPart_Click(object? sender, RoutedEventArgs e) => ApplyOverworldOverlayVisibility();
+    private void OverworldOverlaysToggle_Click(object? sender, RoutedEventArgs e) => ApplyOverworldOverlayVisibility();
+
     private void ApplyOverworldOverlayVisibility()
     {
-        OverworldCanvas.ShowNodes = OverworldShowEntrancesMenuItem.IsChecked == true;
-        OverworldCanvas.ShowLocks = OverworldShowLocksMenuItem.IsChecked == true;
-        OverworldCanvas.ShowMapSprites = OverworldShowSpritesMenuItem.IsChecked == true;
+        var visible = OverworldOverlaysToggle.IsChecked == true;
+        OverworldCanvas.ShowNodes = visible;
+        OverworldCanvas.ShowLocks = visible;
+        OverworldCanvas.ShowMapSprites = visible;
+        OverworldOverlaysToggle.Content = visible ? "Hide overlays" : "Show overlays";
     }
 
     private void SetOverworldEditMode(int mode)
@@ -1464,6 +1546,8 @@ public sealed partial class MainWindow : Window
                 ShowOverworldModeHint("Click an empty map tile to add an entrance. Click or drag an outlined entrance to choose its destination.");
                 OverworldContextEditor.IsVisible = true;
                 OverworldNodeHelpEditor.IsVisible = true;
+                var usedSlots = _overworlds.Take(8).Sum(static map => map.LevelPointers.Count);
+                OverworldNodeCapacityText.Text = $"Vanilla entrance slots: {usedSlots}/{_overworldNodeCapacity}. Delete an entrance in World 1–8 to free a slot.";
                 break;
             case 2:
                 ShowOverworldLockPicker();
@@ -1840,15 +1924,19 @@ public sealed partial class MainWindow : Window
         _refreshingOverworldNode = true;
         try
         {
-            var choices = _rom?.Profile.Levels.Values.OrderBy(static level => level.DisplayName, StringComparer.Ordinal).ToArray() ?? [];
+            var choices = _rom?.Profile.Levels.Values
+                .Select(static level => new OverworldNodeDestinationChoice(level, level.DisplayName.Contains("Fortress", StringComparison.OrdinalIgnoreCase)))
+                .OrderByDescending(static choice => choice.IsFortress)
+                .ThenBy(static choice => choice.Level.DisplayName, StringComparer.Ordinal)
+                .ToArray() ?? [];
             OverworldNodeLevelList.ItemsSource = choices;
-            OverworldNodeLevelList.SelectedItem = choices.FirstOrDefault(level => MatchesNodeDestination(pointer, level));
+            OverworldNodeLevelList.SelectedItem = choices.FirstOrDefault(choice => MatchesNodeDestination(pointer, choice.Level));
         }
         finally
         {
             _refreshingOverworldNode = false;
         }
-        RomStatusText.Text = $"Map node {pointer.Index + 1}: choose a destination level.";
+        RomStatusText.Text = $"Map node {pointer.Index + 1}: choose a level or fortress destination.";
     }
 
     private void OverworldCanvas_LockBridgeSelected(object? sender, OverworldLockBridge item)
@@ -2024,8 +2112,9 @@ public sealed partial class MainWindow : Window
     private void OverworldNodeLevelList_SelectionChanged(object? sender, EventArgs e)
     {
         if (_refreshingOverworldNode || _rom is null || _project is null || _selectedOverworldNode is null ||
-            OverworldNodeLevelList.SelectedItem is not LevelLocation target || OverworldCanvas.World is not { } world ||
-            !TryGetMapPointers(target, out var layoutPointer, out var enemyPointer)) return;
+            OverworldNodeLevelList.SelectedItem is not OverworldNodeDestinationChoice choice || OverworldCanvas.World is not { } world) return;
+        var target = choice.Level;
+        if (!TryGetMapPointers(target, out var layoutPointer, out var enemyPointer)) return;
 
         var current = world.LevelPointers.ElementAtOrDefault(_selectedOverworldNode.Index);
         if (current is null) return;
@@ -2040,6 +2129,8 @@ public sealed partial class MainWindow : Window
         RenderOverworld(next);
         RomStatusText.Text = $"Map node {nextPointer.Index + 1} now enters {target.DisplayName}.";
     }
+
+    private void OverworldDeleteNode_Click(object? sender, RoutedEventArgs e) => DeleteSelectedOverworldItem();
 
     private bool MatchesNodeDestination(OverworldLevelPointer pointer, LevelLocation level) =>
         pointer.ObjectSet == level.Tileset && TryGetMapPointers(level, out var layoutPointer, out var enemyPointer) &&
@@ -2169,7 +2260,7 @@ public sealed partial class MainWindow : Window
     private void DeleteSelectedOverworldItem()
     {
         if (_project is null || OverworldCanvas.World is not { } world) return;
-        if (_selectedOverworldMapSprite is { } sprite)
+        if (OverworldCanvas.EditMapSprites && _selectedOverworldMapSprite is { } sprite)
         {
             if (sprite.IsAirshipSlot) { RomStatusText.Text = "The airship-reserved map sprite slot cannot be removed."; return; }
             var current = world.MapSprites[sprite.Index];
@@ -2181,7 +2272,7 @@ public sealed partial class MainWindow : Window
             RomStatusText.Text = "Removed the map sprite; its vanilla slot is available again.";
             return;
         }
-        if (_selectedOverworldNode is not null)
+        if (OverworldCanvas.EditNodes && _selectedOverworldNode is not null)
         {
             if (world.World == 8)
             {
@@ -2204,8 +2295,15 @@ public sealed partial class MainWindow : Window
             RomStatusText.Text = "Removed the map node. The stock node table will be rebuilt on export.";
             return;
         }
-        if (_selectedOverworldLock is not null)
-            RomStatusText.Text = "Lock removal is not enabled yet: the stock selector table needs one more verified audit.";
+        if (OverworldCanvas.EditNodes)
+        {
+            RomStatusText.Text = "Entrances: select an outlined entrance, then press Delete. Click an empty tile to add one.";
+            return;
+        }
+        if (OverworldCanvas.EditLocks && _selectedOverworldLock is not null)
+        {
+            RomStatusText.Text = "Locks cannot be removed in vanilla mode. Switch to Entrances to add or remove level entrances.";
+        }
     }
 
     private void BuildOverworldTilePicker(OverworldDocument world)
@@ -2574,26 +2672,65 @@ public sealed partial class MainWindow : Window
         return result;
     }
 
-    private void EnhancedOutputMenuItem_Click(object? sender, RoutedEventArgs e)
+    private async void OpenProjectSettings_Click(object? sender, RoutedEventArgs e)
     {
-        if (_project is null)
+        if (_project is null || _rom is null) return;
+        var enhancedAvailable = string.Equals(_rom.Profile.Id, "us-prg1", StringComparison.Ordinal) &&
+            _rom.Mapper == 4 && _rom.PrgLength == 0x40000;
+        const string enhancedUnavailableReason = "Enhanced MMC3 output is verified only for the clean US PRG1 mapper-4 ROM.";
+        var window = new ProjectSettingsWindow(
+            _project.OutputMode,
+            _project.StorageMode,
+            enhancedAvailable,
+            enhancedUnavailableReason,
+            GetFixedSlotStorageWarning,
+            SaveProjectSettingsAsync);
+        await window.ShowDialog(this);
+    }
+
+    private string? GetFixedSlotStorageWarning(RomStorageMode storage)
+    {
+        if (storage != RomStorageMode.FixedSlots || _project is null || _rom is null) return null;
+        var candidate = _document is null ? _project : _project.WithArea(_document);
+        candidate = candidate with { StorageMode = RomStorageMode.FixedSlots };
+        var report = _compiler.AnalyzeVanillaCapacity(candidate, _rom);
+        var blocked = report.Areas.Values
+            .Where(static area => !area.Layout.Fits || !area.Sprites.Fits)
+            .Select(static area => area.DisplayName)
+            .Distinct(StringComparer.Ordinal)
+            .Take(3)
+            .ToArray();
+        return blocked.Length == 0
+            ? null
+            : $"{string.Join(", ", blocked)} {(blocked.Length == 1 ? "is" : "are")} over its original fixed-slot limit. Keeping this setting will leave those edits intact, but Play and Export remain blocked until they fit or managed storage is re-enabled.";
+    }
+
+    private Task<bool> SaveProjectSettingsAsync(RomOutputMode output, RomStorageMode storage)
+    {
+        if (_project is null || _savedProject is null || string.IsNullOrWhiteSpace(_projectPath))
         {
-            EnhancedOutputMenuItem.IsChecked = false;
-            AddDiagnostics([Diagnostics.Warning("ENHANCED_PROJECT", "Open a verified ROM or project before choosing an output mode.")]);
-            return;
+            AddDiagnostics([Diagnostics.Error("PROJECT_SETTINGS_PATH", "Save the project once before saving project-only settings. Pending level edits were not saved.")]);
+            return Task.FromResult(false);
         }
 
-        var enhanced = EnhancedOutputMenuItem.IsChecked == true;
-        _project = _project with
-        {
-            OutputMode = enhanced ? RomOutputMode.EnhancedMmc3 : RomOutputMode.Vanilla,
-            StorageMode = enhanced ? RomStorageMode.ExpandedBanks : RomStorageMode.FixedSlots
-        };
-        _isProjectDirty = true;
-        UpdateSaveState();
-        AddDiagnostics([enhanced
-            ? Diagnostics.Warning("ENHANCED_SELECTED", "Enhanced output selected. It is battery-backed and experimental; export it only for emulator testing.")
-            : Diagnostics.Info("VANILLA_SELECTED", "Vanilla output selected. Export remains byte-compatible with the stock mapper and ROM size.")]);
+        // Persist settings from the last saved project, never from _project:
+        // _project can include current unsaved level mutations.
+        var settingsOnly = _savedProject with { OutputMode = output, StorageMode = storage };
+        var saved = ProjectStore.Save(settingsOnly, _projectPath);
+        AddDiagnostics(saved.Diagnostics);
+        if (!saved.IsSuccess) return Task.FromResult(false);
+
+        _savedProject = settingsOnly;
+        _project = _project with { OutputMode = output, StorageMode = storage };
+        RefreshInspector();
+        RefreshPatches();
+        AddDiagnostics([output == RomOutputMode.EnhancedMmc3
+            ? Diagnostics.Warning("ENHANCED_SELECTED", "Enhanced MMC3 output selected. Test it in Mesen before relying on it.")
+            : Diagnostics.Info("VANILLA_SELECTED", "Vanilla output selected. The original mapper and ROM size are preserved."),
+            storage == RomStorageMode.ManagedVanilla
+                ? Diagnostics.Info("MANAGED_STORAGE_ENABLED", "Managed vanilla storage enabled. Compatible levels share their verified PRG-bank pool.")
+                : Diagnostics.Info("MANAGED_STORAGE_DISABLED", "Levels use their original fixed slots.")]);
+        return Task.FromResult(true);
     }
 
     private void Undo()
@@ -2731,10 +2868,25 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var manager = new PatchManagerWindow(_project.Patches ?? PatchSettings.None, _project.ExternalPatches ?? [], (settings, externalPatches) =>
+        var manager = new PatchManagerWindow(
+            _project.Patches ?? PatchSettings.None,
+            _project.ExternalPatches ?? [],
+            _project.OutputMode == RomOutputMode.EnhancedMmc3,
+            (settings, externalPatches) =>
         {
-            _project = _project with { Patches = settings, ExternalPatches = externalPatches };
+            _project = _project with
+            {
+                Patches = settings,
+                ExternalPatches = externalPatches
+            };
             MarkPatchesChanged();
+            if (settings.Get("enhanced-autosave-storage") is { EnabledByDefault: true } &&
+                _project.OutputMode != RomOutputMode.EnhancedMmc3)
+            {
+                AddDiagnostics([Diagnostics.Warning(
+                    "ENHANCED_SAVE_MODE",
+                    "Enhanced Save Storage is included, but requires Enhanced MMC3 output. Enable it in File > Project settings before export or play-test.")]);
+            }
         });
         await manager.ShowDialog(this);
     }
@@ -2786,16 +2938,12 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        var arguments = (EmulatorArgumentsBox.Text ?? "{rom}")
-            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         _project = _project with
         {
             EditorState = _project.EditorState with
             {
                 LastAreaId = _document?.AreaId,
-                Zoom = EditorCanvas.Zoom,
-                EmulatorPath = EmulatorPathBox.Text,
-                EmulatorArguments = arguments
+                Zoom = EditorCanvas.Zoom
             }
         };
     }
@@ -2823,8 +2971,6 @@ public sealed partial class MainWindow : Window
     private void UpdateSaveState()
     {
         if (SaveButton is null) return;
-        if (EnhancedOutputMenuItem is not null)
-            EnhancedOutputMenuItem.IsChecked = _project?.OutputMode == RomOutputMode.EnhancedMmc3;
         SaveButton.IsEnabled = _project is not null;
         var overworldActive = OverworldToggle.IsChecked == true && OverworldCanvas.World is not null;
         if (UndoButton is not null) UndoButton.IsEnabled = overworldActive ? _overworldHistory.CanUndo : _history.CanUndo;
@@ -2896,19 +3042,26 @@ public sealed partial class MainWindow : Window
         if (capacity is not null)
         {
             UpdateByteBudget(capacity);
-            SpaceText.Text =
-                $"Layout: {capacity.Layout.Used} / {capacity.Layout.MaximumStreamLength} bytes" +
-                $" (original slot {capacity.Layout.OriginalCapacity})\n" +
-                $"Shared PRG{capacity.LayoutBank} layout pool: {capacity.Layout.SharedPoolUsed} / {capacity.Layout.SharedPoolCapacity} bytes\n" +
-                $"Sprites: {capacity.Sprites.Used} / {capacity.Sprites.MaximumStreamLength} bytes" +
-                $" (original slot {capacity.Sprites.OriginalCapacity})\n" +
-                $"Shared PRG6 sprite pool: {capacity.Sprites.SharedPoolUsed} / {capacity.Sprites.SharedPoolCapacity} bytes\n" +
-                $"Used by: {string.Join(", ", _document.UsedBy)}";
+            var managed = _project?.StorageMode == RomStorageMode.ManagedVanilla;
+            var managedLayoutText = capacity.Layout.MaximumStreamLength > capacity.Layout.OriginalCapacity
+                ? $"Tiles: {capacity.Layout.Used} / {capacity.Layout.MaximumStreamLength} bytes (shared storage; original limit {capacity.Layout.OriginalCapacity})"
+                : $"Tiles: {capacity.Layout.Used} / {capacity.Layout.OriginalCapacity} bytes (original limit for this level)";
+            SpaceText.Text = managed
+                ? managedLayoutText + "\n" +
+                  $"Tile storage pool: {capacity.Layout.SharedPoolUsed} / {capacity.Layout.SharedPoolCapacity} bytes used\n" +
+                  $"Sprites: {capacity.Sprites.Used} / {capacity.Sprites.MaximumStreamLength} bytes (shared storage; original limit {capacity.Sprites.OriginalCapacity})\n" +
+                  $"Sprite storage pool: {capacity.Sprites.SharedPoolUsed} / {capacity.Sprites.SharedPoolCapacity} bytes used\n" +
+                  "Shared limits update as other levels grow.\n" +
+                  $"Used by: {string.Join(", ", _document.UsedBy)}"
+                : $"Tiles: {capacity.Layout.Used} / {capacity.Layout.MaximumStreamLength} bytes\n" +
+                  $"Sprites: {capacity.Sprites.Used} / {capacity.Sprites.MaximumStreamLength} bytes\n" +
+                  $"Fixed slots — enable Managed vanilla level storage in File for shared bank capacity.\n" +
+                  $"Used by: {string.Join(", ", _document.UsedBy)}";
         }
         else
         {
             UpdateByteBudget(layoutUsed, _document.OriginalLayoutLength, spriteUsed, _document.OriginalEnemyLength);
-            SpaceText.Text = $"Layout: {layoutUsed} / {_document.OriginalLayoutLength} bytes\n" +
+            SpaceText.Text = $"Tiles: {layoutUsed} / {_document.OriginalLayoutLength} bytes\n" +
                              $"Sprites: {spriteUsed} / {_document.OriginalEnemyLength} bytes\n" +
                              $"Used by: {string.Join(", ", _document.UsedBy)}";
         }
@@ -2917,25 +3070,59 @@ public sealed partial class MainWindow : Window
     private void UpdateByteBudget(Prg1AreaCapacity capacity)
     {
         var fits = capacity.Layout.Fits && capacity.Sprites.Fits;
-        ByteBudgetText.Text = $"Level {capacity.Layout.Used}/{capacity.Layout.MaximumStreamLength} · " +
-                              $"Sprites {capacity.Sprites.Used}/{capacity.Sprites.MaximumStreamLength}";
-        ByteBudgetText.Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse(
-            fits ? "#9FB0C4" : "#FF6B6B"));
-        ToolTip.SetTip(ByteBudgetText,
-            $"Vanilla PRG1 shared capacity. Layout pool: {capacity.Layout.SharedPoolUsed}/{capacity.Layout.SharedPoolCapacity} bytes in PRG{capacity.LayoutBank}; " +
-            $"sprite pool: {capacity.Sprites.SharedPoolUsed}/{capacity.Sprites.SharedPoolCapacity} bytes in PRG6." +
-            (fits ? string.Empty : " The current project cannot be allocated; Play and Export will show the same allocator error."));
+        var managed = _project?.StorageMode == RomStorageMode.ManagedVanilla;
+        var tilesShared = capacity.Layout.MaximumStreamLength > capacity.Layout.OriginalCapacity;
+        var spritesShared = capacity.Sprites.MaximumStreamLength > capacity.Sprites.OriginalCapacity;
+        TileBudgetLabel.Text = tilesShared ? $"Tiles · PRG{capacity.LayoutBank}" : "Tiles · Original";
+        SpriteBudgetLabel.Text = spritesShared ? "Sprites · Shared PRG6" : "Sprites · Original";
+        SetBudgetVisual(TileBudgetBar, TileBudgetCount, capacity.Layout.Used, capacity.Layout.MaximumStreamLength, capacity.Layout.Fits);
+        SetBudgetVisual(SpriteBudgetBar, SpriteBudgetCount, capacity.Sprites.Used, capacity.Sprites.MaximumStreamLength, capacity.Sprites.Fits);
+        StorageBudgetText.Text = managed ? "Managed" : "Fixed";
+        StorageBudgetBadge.Background = new SolidColorBrush(Color.Parse(managed && (tilesShared || spritesShared) ? "#183C4A" : "#203247"));
+        StorageBudgetBadge.BorderBrush = new SolidColorBrush(Color.Parse(managed && (tilesShared || spritesShared) ? "#2F8194" : "#46627E"));
+        var managedLayoutNote = tilesShared
+            ? "Tile storage is shared with other levels in the same level family. "
+            : "This level's tiles still use their original fixed limit. ";
+        ToolTip.SetTip(StorageBudgetBadge, managed
+            ? $"Managed vanilla storage is enabled. {managedLayoutNote}" +
+              "Sprite storage is shared across levels. These limits are the space available now, not permanent reservations, and update as other levels grow." +
+              (fits ? string.Empty : " The current project cannot be allocated; Play and Export will show the same allocator error.")
+            : "Fixed slots. Enable Managed vanilla level storage in File to use verified shared-bank capacity.");
+        ToolTip.SetTip(TileBudgetPanel, tilesShared
+            ? $"This level currently uses {capacity.Layout.Used} of {capacity.Layout.MaximumStreamLength} tile bytes available in shared PRG{capacity.LayoutBank} storage. Its original limit was {capacity.Layout.OriginalCapacity}."
+            : $"This level uses {capacity.Layout.Used} of its original {capacity.Layout.OriginalCapacity} tile bytes.");
+        ToolTip.SetTip(SpriteBudgetPanel, spritesShared
+            ? $"This level uses {capacity.Sprites.Used} sprite bytes. Its current per-level allowance is {capacity.Sprites.MaximumStreamLength} bytes after reserving the other sprite streams in shared PRG6; this is not PRG6's total size. The shared pool currently uses {capacity.Sprites.SharedPoolUsed} of {capacity.Sprites.SharedPoolCapacity} bytes. Its original limit was {capacity.Sprites.OriginalCapacity}."
+            : $"This level uses {capacity.Sprites.Used} of its original {capacity.Sprites.OriginalCapacity} sprite bytes.");
     }
 
     private void UpdateByteBudget(int layoutUsed, int layoutCapacity, int enemyUsed, int enemyCapacity)
     {
-        var layoutLeft = layoutCapacity - layoutUsed;
-        var enemyLeft = enemyCapacity - enemyUsed;
-        ByteBudgetText.Text = $"Level {layoutUsed}/{layoutCapacity} · Sprites {enemyUsed}/{enemyCapacity}";
-        ByteBudgetText.Foreground = layoutLeft < 0 || enemyLeft < 0
-            ? new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#FF6B6B"))
-            : new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#9FB0C4"));
-        ToolTip.SetTip(ByteBudgetText, "This ROM profile uses its verified original stream slots.");
+        TileBudgetLabel.Text = "Tiles · Original";
+        SpriteBudgetLabel.Text = "Sprites · Original";
+        SetBudgetVisual(TileBudgetBar, TileBudgetCount, layoutUsed, layoutCapacity, layoutUsed <= layoutCapacity);
+        SetBudgetVisual(SpriteBudgetBar, SpriteBudgetCount, enemyUsed, enemyCapacity, enemyUsed <= enemyCapacity);
+        StorageBudgetText.Text = "Fixed";
+        StorageBudgetBadge.Background = new SolidColorBrush(Color.Parse("#203247"));
+        StorageBudgetBadge.BorderBrush = new SolidColorBrush(Color.Parse("#46627E"));
+        ToolTip.SetTip(StorageBudgetBadge, "This ROM profile uses its verified original level limits.");
+        ToolTip.SetTip(TileBudgetPanel, $"This level uses {layoutUsed} of {layoutCapacity} tile bytes.");
+        ToolTip.SetTip(SpriteBudgetPanel, $"This level uses {enemyUsed} of {enemyCapacity} sprite bytes.");
+    }
+
+    private static void SetBudgetVisual(ProgressBar bar, TextBlock count, int used, int capacity, bool fits)
+    {
+        bar.Maximum = Math.Max(1, capacity);
+        bar.Value = Math.Clamp(used, 0, Math.Max(1, capacity));
+        var ratio = capacity <= 0 ? 1d : (double)used / capacity;
+        var color = !fits || used > capacity
+            ? "#FF5C5C"
+            : ratio >= 0.9
+                ? "#E5A83B"
+                : "#38A6C5";
+        bar.Foreground = new SolidColorBrush(Color.Parse(color));
+        count.Text = $"{used} / {capacity}";
+        count.Foreground = new SolidColorBrush(Color.Parse(!fits || used > capacity ? "#FF6B6B" : "#D7E2EF"));
     }
 
     private void AddDiagnostics(IEnumerable<Diagnostic> diagnostics)

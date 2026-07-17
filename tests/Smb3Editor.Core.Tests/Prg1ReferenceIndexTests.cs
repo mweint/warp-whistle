@@ -89,6 +89,38 @@ public sealed class Prg1ReferenceIndexTests
     }
 
     [Fact]
+    public void OptionalAuthenticatedPrg1EnemyBankHasDisjointStreamsAndVerifiedTrailingPadding()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var built = Prg1ReferenceIndexBuilder.Build(source);
+        Assert.True(built.IsSuccess, string.Join(Environment.NewLine, built.Diagnostics));
+
+        var streams = built.Value!.Enemies.OrderBy(static stream => stream.Id.FileOffset).ToArray();
+        Assert.Equal(streams.Length, streams.Select(static stream => stream.Id).Distinct().Count());
+        for (var index = 1; index < streams.Length; index++)
+        {
+            var previousEnd = streams[index - 1].Id.FileOffset + streams[index - 1].Length;
+            Assert.True(previousEnd <= streams[index].Id.FileOffset,
+                $"PRG6 sprite streams overlap at ${streams[index - 1].Id.FileOffset:X5} and ${streams[index].Id.FileOffset:X5}.");
+        }
+
+        var usedEnd = streams.Max(static stream => stream.Id.FileOffset + stream.Length);
+        Assert.Equal(0x0DA44, usedEnd);
+        Assert.All(source.Bytes.AsSpan(0x0DA75, 0x0E010 - 0x0DA75).ToArray(), static value => Assert.Equal(0xFF, value));
+        Assert.All(streams.SelectMany(static stream => stream.PointerSites)
+                .Where(static site => site.Origin == Prg1PointerSiteOrigin.LayoutHeader),
+            static site =>
+            {
+                Assert.NotNull(site.ContainingLayout);
+                Assert.Equal(2, site.RelativeOffset);
+                Assert.Equal(site.ContainingLayout.Value.FileOffset + 2, site.FileOffset);
+            });
+    }
+
+
+
+    [Fact]
     public void OptionalAuthenticatedPrg1CurrentSnapshotRebuildsRelocatedOverworldRootSites()
     {
         var source = LoadOptionalPrg1();

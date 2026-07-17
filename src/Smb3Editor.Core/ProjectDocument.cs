@@ -3,17 +3,19 @@ namespace Smb3Editor.Core;
 public sealed record ProjectSource(
     string ProfileId,
     string Sha1,
-    string Sha256,
-    string RomPathHint);
+    string Sha256)
+{
+    public bool Matches(RomImage rom) =>
+        string.Equals(ProfileId, rom.Profile.Id, StringComparison.Ordinal) &&
+        string.Equals(Sha1, rom.Sha1, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(Sha256, rom.Sha256, StringComparison.OrdinalIgnoreCase);
+}
 
 public sealed record EditorState(
     string? LastAreaId = null,
     double Zoom = 1,
     double PanX = 0,
-    double PanY = 0,
-    string? EmulatorPath = null,
-    IReadOnlyList<string>? EmulatorArguments = null,
-    string PlayMode = "rom");
+    double PanY = 0);
 
 public sealed record PaletteOverride(int Tileset, bool Objects, int Slot, IReadOnlyList<byte> Colors);
 public sealed record PaletteSlotLabel(int Tileset, bool Objects, int Slot, string Name);
@@ -38,6 +40,7 @@ public enum RomOutputMode
 public enum RomStorageMode
 {
     FixedSlots,
+    ManagedVanilla,
     ExpandedBanks
 }
 
@@ -116,11 +119,11 @@ public sealed record ProjectDocumentV2(
     IReadOnlyList<OverworldPaletteOverride>? OverworldPalettes = null,
     IReadOnlyList<OverworldMapSpriteOverride>? OverworldMapSprites = null)
 {
-    public const int CurrentFormatVersion = 12;
+    public const int CurrentFormatVersion = 13;
 
     public static ProjectDocumentV2 Create(RomImage source) => new(
         CurrentFormatVersion,
-        new ProjectSource(source.Profile.Id, source.Sha1, source.Sha256, source.SourcePath),
+        new ProjectSource(source.Profile.Id, source.Sha1, source.Sha256),
         new Dictionary<string, LevelDocument>(StringComparer.Ordinal),
         new EditorState(),
         [],

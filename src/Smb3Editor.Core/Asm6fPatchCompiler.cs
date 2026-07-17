@@ -7,6 +7,7 @@ namespace Smb3Editor.Core;
 /// <summary>Runs the bundled ASM6f assembler without exposing a console window.</summary>
 public sealed class Asm6fAssembler
 {
+    private static readonly object AssemblyGate = new();
     private readonly string _executablePath;
 
     public Asm6fAssembler(string? executablePath = null) =>
@@ -26,6 +27,16 @@ public sealed class Asm6fAssembler
             return OperationResult<byte[]>.Failure(Diagnostics.Error("ASM6F_SOURCE", $"Patch source '{sourcePath}' was not found."));
         }
 
+        // ASM6f briefly opens its source/includes exclusively. Multiple project
+        // builds in one process must not race over the same bundled package.
+        lock (AssemblyGate)
+        {
+            return AssembleLocked(sourcePath);
+        }
+    }
+
+    private OperationResult<byte[]> AssembleLocked(string sourcePath)
+    {
         var outputPath = Path.Combine(Path.GetTempPath(), $"warp-whistle-{Guid.NewGuid():N}.bin");
         try
         {
@@ -98,7 +109,8 @@ public sealed record AsmPatchManifest(
     IReadOnlyList<string>? SupportedProfiles = null,
     IReadOnlyList<AsmPatchWrite>? Writes = null,
     IReadOnlyList<PatchFeatureManifest>? Features = null,
-    PatchConfigurationManifest? Configuration = null);
+    PatchConfigurationManifest? Configuration = null,
+    bool Internal = false);
 
 public sealed record AsmPatchWrite(
     int Offset,

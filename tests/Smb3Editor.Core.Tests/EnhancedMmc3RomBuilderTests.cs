@@ -18,7 +18,7 @@ public sealed class EnhancedMmc3RomBuilderTests
         var project = ProjectDocumentV2.Create(source) with
         {
             OutputMode = RomOutputMode.EnhancedMmc3,
-            StorageMode = RomStorageMode.ExpandedBanks
+            StorageMode = RomStorageMode.ManagedVanilla
         };
 
         var result = new EnhancedMmc3RomBuilder().Build(project, source, source.Bytes);

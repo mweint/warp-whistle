@@ -8,7 +8,7 @@ public sealed class Prg1VanillaRelocationTests
         var source = LoadOptionalPrg1();
         if (source is null) return;
 
-        var built = new RomCompiler().Compile(ProjectDocumentV2.Create(source), source);
+        var built = new RomCompiler().Compile(Managed(source), source);
 
         Assert.True(built.IsSuccess, Messages(built.Diagnostics));
         Assert.Equal(source.Bytes, built.Value!.RomBytes);
@@ -23,7 +23,7 @@ public sealed class Prg1VanillaRelocationTests
         var document = RequireDocument(source, "W1-1");
         var grown = GrowLayout(document, 1);
 
-        var built = new RomCompiler().Compile(ProjectDocumentV2.Create(source).WithArea(grown), source);
+        var built = new RomCompiler().Compile(Managed(source).WithArea(grown), source);
 
         Assert.True(built.IsSuccess, Messages(built.Diagnostics));
         var after = RequireGraph(source, built.Value!.RomBytes);
@@ -42,6 +42,25 @@ public sealed class Prg1VanillaRelocationTests
     }
 
     [Fact]
+    public void OptionalAuthenticatedPrg1FixedSlotsDoNotClaimManagedCapacity()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var grown = GrowLayout(RequireDocument(source, "W1-1"), 1);
+        var project = ProjectDocumentV2.Create(source).WithArea(grown);
+        var compiler = new RomCompiler();
+
+        var capacity = compiler.AnalyzeVanillaCapacity(project, source).Find("W1-1");
+        var built = compiler.Compile(project, source);
+
+        Assert.NotNull(capacity);
+        Assert.False(capacity.Layout.RequiresRelocation);
+        Assert.False(capacity.Layout.Fits);
+        Assert.False(built.IsSuccess);
+        Assert.Contains(built.Diagnostics, static item => item.Code == "BUILD_LAYOUT_SPACE");
+    }
+
+    [Fact]
     public void OptionalAuthenticatedPrg1OverflowingEnemyStreamRelocatesEveryAlias()
     {
         var source = LoadOptionalPrg1();
@@ -50,7 +69,7 @@ public sealed class Prg1VanillaRelocationTests
         var document = RequireDocument(source, "W1-1");
         var grown = GrowEnemies(document, 1);
 
-        var built = new RomCompiler().Compile(ProjectDocumentV2.Create(source).WithArea(grown), source);
+        var built = new RomCompiler().Compile(Managed(source).WithArea(grown), source);
 
         Assert.True(built.IsSuccess, Messages(built.Diagnostics));
         var after = RequireGraph(source, built.Value!.RomBytes);
@@ -64,11 +83,44 @@ public sealed class Prg1VanillaRelocationTests
     }
 
     [Fact]
+    public void OptionalAuthenticatedPrg1WorldFourOneDetachesEmbeddedEnemyPointerAndExpandsSprites()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var document = RequireDocument(source, "W4-1");
+        var project = Managed(source).WithArea(GrowEnemies(document, 1));
+        var compiler = new RomCompiler();
+
+        var capacity = compiler.AnalyzeVanillaCapacity(project, source).Find("W4-1");
+        var built = compiler.Compile(project, source);
+
+        Assert.NotNull(capacity);
+        Assert.True(capacity.Sprites.MaximumStreamLength > capacity.Sprites.OriginalCapacity,
+            $"used={capacity.Sprites.Used} original={capacity.Sprites.OriginalCapacity} max={capacity.Sprites.MaximumStreamLength}");
+        Assert.True(capacity.Sprites.Fits);
+        Assert.True(built.IsSuccess, Messages(built.Diagnostics));
+        RequireGraph(source, built.Value!.RomBytes);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1WorldFourOneCanGrowTilesAndSpritesTogether()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var document = GrowLayout(GrowEnemies(RequireDocument(source, "W4-1"), 1), 1);
+
+        var built = new RomCompiler().Compile(Managed(source).WithArea(document), source);
+
+        Assert.True(built.IsSuccess, Messages(built.Diagnostics));
+        RequireGraph(source, built.Value!.RomBytes);
+    }
+
+    [Fact]
     public void OptionalAuthenticatedPrg1SharedPoolAllocationIsDeterministic()
     {
         var source = LoadOptionalPrg1();
         if (source is null) return;
-        var project = ProjectDocumentV2.Create(source)
+        var project = Managed(source)
             .WithArea(GrowLayout(RequireDocument(source, "W1-1"), 1));
         var compiler = new RomCompiler();
 
@@ -89,7 +141,7 @@ public sealed class Prg1VanillaRelocationTests
         var document = RequireDocument(source, "W1-1");
         var grown = GrowLayout(document, 3000);
 
-        var built = new RomCompiler().Compile(ProjectDocumentV2.Create(source).WithArea(grown), source);
+        var built = new RomCompiler().Compile(Managed(source).WithArea(grown), source);
 
         Assert.False(built.IsSuccess);
         Assert.Null(built.Value);
@@ -101,7 +153,7 @@ public sealed class Prg1VanillaRelocationTests
     {
         var source = LoadOptionalPrg1();
         if (source is null) return;
-        var project = ProjectDocumentV2.Create(source)
+        var project = Managed(source)
             .WithArea(GrowLayout(RequireDocument(source, "W1-1"), 1))
             .WithArea(GrowLayout(RequireDocument(source, "W1-3"), 1));
 
@@ -112,17 +164,40 @@ public sealed class Prg1VanillaRelocationTests
     }
 
     [Fact]
-    public void OptionalAuthenticatedPrg1SharedPhysicalLayoutBankFailsClosed()
+    public void OptionalAuthenticatedPrg1SharedPhysicalLayoutBankDetachesAndRelocates()
     {
         var source = LoadOptionalPrg1();
         if (source is null) return;
-        var project = ProjectDocumentV2.Create(source).WithArea(GrowLayout(RequireDocument(source, "W1-2"), 1));
+        var project = Managed(source).WithArea(GrowLayout(RequireDocument(source, "W1-2"), 1));
 
         var built = new RomCompiler().Compile(project, source);
 
-        Assert.False(built.IsSuccess);
-        Assert.Null(built.Value);
-        Assert.Contains(built.Diagnostics, static item => item.Code == "RELOC_LAYOUT_OVERLAP");
+        Assert.True(built.IsSuccess, Messages(built.Diagnostics));
+        RequireGraph(source, built.Value!.RomBytes);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1WorldFourOneDetachesFromSharedPrg19Interpretation()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var document = RequireDocument(source, "W4-1");
+        var project = Managed(source).WithArea(GrowLayout(document, 1));
+        var compiler = new RomCompiler();
+
+        var capacity = compiler.AnalyzeVanillaCapacity(project, source).Find("W4-1");
+        var built = compiler.Compile(project, source);
+
+        Assert.NotNull(capacity);
+        var graph = RequireGraph(source);
+        var id = new Prg1LayoutStreamId(source.Profile.Levels["W4-1"].LayoutOffset, document.Tileset);
+        var stream = graph.Layouts.Single(item => item.Id == id);
+        var detail = $"used={capacity.Layout.Used} original={capacity.Layout.OriginalCapacity} max={capacity.Layout.MaximumStreamLength}; " +
+                     string.Join(", ", stream.PointerSites.Select(site => $"{site.Origin}@{site.FileOffset:X5} in {site.ContainingLayout}"));
+        Assert.True(capacity.Layout.MaximumStreamLength > capacity.Layout.OriginalCapacity, detail);
+        Assert.True(capacity.Layout.Fits);
+        Assert.True(built.IsSuccess, Messages(built.Diagnostics));
+        RequireGraph(source, built.Value!.RomBytes);
     }
 
     [Fact]
@@ -131,7 +206,7 @@ public sealed class Prg1VanillaRelocationTests
         var source = LoadOptionalPrg1();
         if (source is null) return;
         var document = RequireDocument(source, "W1-1");
-        var project = ProjectDocumentV2.Create(source).WithArea(GrowLayout(document, 1)) with
+        var project = Managed(source).WithArea(GrowLayout(document, 1)) with
         {
             Patches = new PatchSettings(
                 QuickRetry: new PatchSetting(LevelOverrides: new Dictionary<string, bool> { ["W1-1"] = true }))
@@ -161,7 +236,7 @@ public sealed class Prg1VanillaRelocationTests
         if (source is null) return;
         var compiler = new RomCompiler();
         var document = GrowLayout(RequireDocument(source, "W1-1"), 1);
-        var project = ProjectDocumentV2.Create(source).WithArea(document);
+        var project = Managed(source).WithArea(document);
 
         var capacity = compiler.AnalyzeVanillaCapacity(project, source).Find("W1-1");
         var built = compiler.Compile(project, source);
@@ -179,7 +254,7 @@ public sealed class Prg1VanillaRelocationTests
         var source = LoadOptionalPrg1();
         if (source is null) return;
         var compiler = new RomCompiler();
-        var project = ProjectDocumentV2.Create(source).WithArea(GrowLayout(RequireDocument(source, "W1-1"), 3000));
+        var project = Managed(source).WithArea(GrowLayout(RequireDocument(source, "W1-1"), 3000));
 
         var report = compiler.AnalyzeVanillaCapacity(project, source);
         var capacity = report.Find("W1-1");
@@ -199,12 +274,110 @@ public sealed class Prg1VanillaRelocationTests
         var source = LoadOptionalPrg1();
         if (source is null) return;
         var document = RequireDocument(source, "W1-1");
-        var report = new RomCompiler().AnalyzeVanillaCapacity(ProjectDocumentV2.Create(source).WithArea(document), source);
+        var report = new RomCompiler().AnalyzeVanillaCapacity(Managed(source).WithArea(document), source);
         var capacity = report.Find("W1-1");
 
         Assert.NotNull(capacity);
         Assert.True(capacity.Layout.MaximumStreamLength > document.OriginalLayoutLength);
         Assert.True(capacity.Layout.SharedPoolCapacity > 62);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1UntouchedStockAreasNeverReportManagedErrors()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var compiler = new RomCompiler();
+        var failures = new List<string>();
+
+        foreach (var location in source.Profile.Levels.Values)
+        {
+            var document = RequireDocument(source, location.AreaId);
+            var project = Managed(source).WithArea(document);
+            var capacity = compiler.AnalyzeVanillaCapacity(project, source).Find(location.AreaId);
+            var built = compiler.Compile(project, source);
+            if (capacity is null || !capacity.Layout.Fits || !capacity.Sprites.Fits || !built.IsSuccess ||
+                !source.Bytes.AsSpan().SequenceEqual(built.Value!.RomBytes))
+            {
+                failures.Add($"{location.DisplayName}: {Messages(built.Diagnostics)}");
+            }
+        }
+
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1ReportsManagedTileCoverage()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var compiler = new RomCompiler();
+        var fixedOnly = 0;
+        var expanded = 0;
+        var fixedNames = new List<string>();
+        foreach (var location in source.Profile.Levels.Values)
+        {
+            var document = RequireDocument(source, location.AreaId);
+            var capacity = compiler.AnalyzeVanillaCapacity(Managed(source).WithArea(document), source).Find(location.AreaId)!;
+            if (capacity.Layout.MaximumStreamLength > capacity.Layout.OriginalCapacity) expanded++;
+            else { fixedOnly++; fixedNames.Add(location.DisplayName); }
+        }
+        Assert.True(expanded == 80, $"Expanded={expanded}; fixed={string.Join(", ", fixedNames)}");
+        Assert.Equal(0, fixedOnly);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1EveryCatalogedLayoutCanGrowAndRebuildItsGraph()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var compiler = new RomCompiler();
+        var failures = new List<string>();
+
+        foreach (var location in source.Profile.Levels.Values)
+        {
+            var project = Managed(source).WithArea(GrowLayout(RequireDocument(source, location.AreaId), 1));
+            var built = compiler.Compile(project, source);
+            if (!built.IsSuccess)
+            {
+                failures.Add($"{location.DisplayName}: {Messages(built.Diagnostics)}");
+                continue;
+            }
+
+            var graph = Prg1ReferenceIndexBuilder.BuildCurrent(source, built.Value!.RomBytes);
+            if (!graph.IsSuccess)
+                failures.Add($"{location.DisplayName}: {Messages(graph.Diagnostics)}");
+        }
+
+        Assert.Empty(failures);
+    }
+
+    [Fact]
+    public void OptionalAuthenticatedPrg1EveryCatalogedEnemyStreamCanGrowAndRebuildItsGraph()
+    {
+        var source = LoadOptionalPrg1();
+        if (source is null) return;
+        var compiler = new RomCompiler();
+        var failures = new List<string>();
+
+        foreach (var location in source.Profile.Levels.Values)
+        {
+            var document = RequireDocument(source, location.AreaId);
+            if (document.Enemies.Count == 0) continue;
+            var project = Managed(source).WithArea(GrowEnemies(document, 1));
+            var built = compiler.Compile(project, source);
+            if (!built.IsSuccess)
+            {
+                failures.Add($"{location.DisplayName}: {Messages(built.Diagnostics)}");
+                continue;
+            }
+
+            var graph = Prg1ReferenceIndexBuilder.BuildCurrent(source, built.Value!.RomBytes);
+            if (!graph.IsSuccess)
+                failures.Add($"{location.DisplayName}: {Messages(graph.Diagnostics)}");
+        }
+
+        Assert.Empty(failures);
     }
 
     private static LevelDocument GrowLayout(LevelDocument document, int count)
@@ -214,6 +387,11 @@ public sealed class Prg1VanillaRelocationTests
         for (var index = 0; index < count; index++) elements.Add(template with { Index = elements.Count });
         return document with { Elements = elements };
     }
+
+    private static ProjectDocumentV2 Managed(RomImage source) => ProjectDocumentV2.Create(source) with
+    {
+        StorageMode = RomStorageMode.ManagedVanilla
+    };
 
     private static int GrowEncodedLayoutLength(LevelDocument document, int count)
     {

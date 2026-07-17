@@ -31,7 +31,8 @@ public sealed class RomCompiler : IRomCompiler
         var output = prepared.Value!;
 
         Prg1RelocationBuild? relocationBuild = null;
-        if (string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal))
+        if (string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal) &&
+            project.StorageMode == RomStorageMode.ManagedVanilla)
         {
             var relocated = Prg1VanillaStreamRelocator.Compile(project, source, output);
             diagnostics.AddRange(relocated.Diagnostics);
@@ -43,6 +44,22 @@ public sealed class RomCompiler : IRomCompiler
         }
         else
         {
+            var sharedFixedLayouts = new HashSet<Prg1LayoutStreamId>();
+            if (string.Equals(source.Profile.Id, "us-prg1", StringComparison.Ordinal) && project.ModifiedAreas.Count > 0)
+            {
+                var graph = Prg1ReferenceIndexBuilder.Build(source);
+                diagnostics.AddRange(graph.Diagnostics);
+                if (graph.IsSuccess)
+                {
+                    foreach (var stream in graph.Value!.Layouts.Where(static stream => stream.IsRelocatable))
+                    {
+                        if (graph.Value.Layouts.Any(other => other.Id != stream.Id && other.IsRelocatable &&
+                            stream.Id.FileOffset < other.Id.FileOffset + other.Length &&
+                            stream.Id.FileOffset + stream.Length > other.Id.FileOffset))
+                            sharedFixedLayouts.Add(stream.Id);
+                    }
+                }
+            }
             // Unsupported revisions retain the original-slot-only compiler path.
             foreach (var pair in project.ModifiedAreas.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
             {
@@ -57,6 +74,14 @@ public sealed class RomCompiler : IRomCompiler
                 diagnostics.AddRange(layout.Diagnostics);
                 diagnostics.AddRange(enemies.Diagnostics);
                 if (!layout.IsSuccess || !enemies.IsSuccess) continue;
+
+                var layoutId = new Prg1LayoutStreamId(location.LayoutOffset, location.Tileset);
+                if (sharedFixedLayouts.Contains(layoutId))
+                {
+                    diagnostics.Add(Diagnostics.Error("BUILD_SHARED_SLOT",
+                        $"{pair.Value.DisplayName} shares stock ROM bytes with another layout interpretation. Enable Managed vanilla level storage before editing this area."));
+                    continue;
+                }
 
                 if (layout.Value!.Length > pair.Value.OriginalLayoutLength)
                 {
@@ -101,7 +126,39 @@ public sealed class RomCompiler : IRomCompiler
                         ? destination.FileOffset
                         : pair.Value.LayoutOffset,
                 StringComparer.Ordinal);
-        var patches = _patchCompiler.Apply(project, source, output, layoutOffsetsByArea);
+        var patchSettings = project.Patches ?? PatchSettings.None;
+        var saveStorage = IsPatchEnabled(patchSettings, "enhanced-autosave-storage", source.Profile.Levels.Keys);
+        if (saveStorage && project.OutputMode != RomOutputMode.EnhancedMmc3)
+        {
+            diagnostics.Add(Diagnostics.Error(
+                "ENHANCED_SAVE_MODE",
+                "Enhanced Save Storage requires Enhanced MMC3 output. Enable Enhanced output before building."));
+            return OperationResult<BuildArtifact>.Failure(diagnostics.ToArray());
+        }
+
+        // Save storage owns the same fixed-bank runtime blocks as the retry
+        // package. Do not let an assembler fill-check obscure this real
+        // incompatibility.
+        var conflictingRuntimePatches = new[] { "quick-retry", "start-select-map", "continuous-auto-scroll" }
+            .Where(id => IsPatchEnabled(patchSettings, id, source.Profile.Levels.Keys))
+            .ToArray();
+        if (saveStorage && conflictingRuntimePatches.Length > 0)
+        {
+            diagnostics.Add(Diagnostics.Error(
+                "PATCH_RUNTIME_CONFLICT",
+                $"Enhanced Save Storage cannot currently be combined with {string.Join(", ", conflictingRuntimePatches)} because they use the same verified fixed-bank runtime space."));
+            return OperationResult<BuildArtifact>.Failure(diagnostics.ToArray());
+        }
+
+        // Save storage is a user-selectable enhanced foundation, but it is
+        // installed after ordinary selected patches and immediately before
+        // PRG expansion. The general patch compiler must not install it in
+        // its normal package pass.
+        var ordinaryPatchProject = project with
+        {
+            Patches = patchSettings.With("enhanced-autosave-storage", null)
+        };
+        var patches = _patchCompiler.Apply(ordinaryPatchProject, source, output, layoutOffsetsByArea);
         diagnostics.AddRange(patches.Diagnostics);
         if (!patches.IsSuccess)
         {
@@ -126,13 +183,7 @@ public sealed class RomCompiler : IRomCompiler
 
         if (project.OutputMode == RomOutputMode.EnhancedMmc3)
         {
-            if (project.Patches?.HasEnabledOptions(source.Profile.Levels.Keys) == true)
-            {
-                diagnostics.Add(Diagnostics.Error(
-                    "ENHANCED_PATCH_COMBINATION",
-                    "Enhanced PRG expansion cannot yet be combined with executable patches; complete the generalized patch pipeline first."));
-            }
-            else
+            if (saveStorage)
             {
                 var storageRoot = PatchCatalog.FindRoot();
                 var storagePackage = storageRoot is null
@@ -150,13 +201,13 @@ public sealed class RomCompiler : IRomCompiler
                 {
                     output = storageFoundation.Value!;
                 }
+            }
 
-                var expanded = _enhancedBuilder.Build(project, source, output);
-                diagnostics.AddRange(expanded.Diagnostics);
-                if (expanded.IsSuccess)
-                {
-                    output = expanded.Value!.RomBytes;
-                }
+            var expanded = _enhancedBuilder.Build(project, source, output);
+            diagnostics.AddRange(expanded.Diagnostics);
+            if (expanded.IsSuccess)
+            {
+                output = expanded.Value!.RomBytes;
             }
         }
 
@@ -185,8 +236,37 @@ public sealed class RomCompiler : IRomCompiler
         var prepared = PrepareEditorOwnedBytes(project, source);
         if (!prepared.IsSuccess)
             return new Prg1VanillaCapacityReport(new Dictionary<string, Prg1AreaCapacity>(), prepared.Diagnostics);
-        return Prg1VanillaStreamRelocator.Analyze(project, source, prepared.Value!);
+        return project.StorageMode == RomStorageMode.ManagedVanilla
+            ? Prg1VanillaStreamRelocator.Analyze(project, source, prepared.Value!)
+            : AnalyzeFixedSlotCapacity(project, source);
     }
+
+    private static Prg1VanillaCapacityReport AnalyzeFixedSlotCapacity(ProjectDocumentV2 project, RomImage source)
+    {
+        var areas = new Dictionary<string, Prg1AreaCapacity>(StringComparer.Ordinal);
+        var diagnostics = new List<Diagnostic>();
+        foreach (var pair in project.ModifiedAreas.OrderBy(static item => item.Key, StringComparer.Ordinal))
+        {
+            if (!source.Profile.Levels.TryGetValue(pair.Key, out var location)) continue;
+            var layout = Smb3LevelCodec.EncodeLayout(pair.Value);
+            var sprites = Smb3LevelCodec.EncodeEnemies(pair.Value);
+            diagnostics.AddRange(layout.Diagnostics);
+            diagnostics.AddRange(sprites.Diagnostics);
+            if (!layout.IsSuccess || !sprites.IsSuccess) continue;
+            var layoutFits = layout.Value!.Length <= pair.Value.OriginalLayoutLength;
+            var spriteFits = sprites.Value!.Length <= pair.Value.OriginalEnemyLength;
+            areas[pair.Key] = new Prg1AreaCapacity(
+                pair.Key, pair.Value.DisplayName, location.Tileset,
+                new Prg1StreamCapacity(layout.Value.Length, pair.Value.OriginalLayoutLength, pair.Value.OriginalLayoutLength,
+                    layout.Value.Length, pair.Value.OriginalLayoutLength, false, layoutFits),
+                new Prg1StreamCapacity(sprites.Value.Length, pair.Value.OriginalEnemyLength, pair.Value.OriginalEnemyLength,
+                    sprites.Value.Length, pair.Value.OriginalEnemyLength, false, spriteFits));
+        }
+        return new Prg1VanillaCapacityReport(areas, diagnostics);
+    }
+
+    private static bool IsPatchEnabled(PatchSettings settings, string id, IEnumerable<string> areaIds) =>
+        settings.Get(id) is { } setting && (setting.EnabledByDefault || areaIds.Any(setting.IsEnabledFor));
 
     private static OperationResult<byte[]> PrepareEditorOwnedBytes(ProjectDocumentV2 project, RomImage source)
     {

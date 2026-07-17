@@ -8,10 +8,10 @@ public sealed class ProjectStoreTests
     [Fact]
     public void ProjectRoundTripsWithoutEmbeddingRomBytes()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-{Guid.NewGuid():N}.smb3proj");
+        var path = Path.Combine(Path.GetTempPath(), $"warp-whistle-{Guid.NewGuid():N}.wwproj");
         var project = new ProjectDocumentV2(
             ProjectDocumentV2.CurrentFormatVersion,
-            new ProjectSource("us-prg1", "abc", "def", "C:/owned/game.nes"),
+            new ProjectSource("us-prg1", "abc", "def"),
             new Dictionary<string, LevelDocument>(),
             new EditorState(Zoom: 1.1));
 
@@ -22,9 +22,14 @@ public sealed class ProjectStoreTests
 
             Assert.True(saved.IsSuccess);
             Assert.True(loaded.IsSuccess);
-            Assert.Equal(project.Source, loaded.Value!.Source);
+            Assert.Equal(project.Source.ProfileId, loaded.Value!.Source.ProfileId);
+            Assert.Equal(project.Source.Sha1, loaded.Value.Source.Sha1);
+            Assert.Equal(project.Source.Sha256, loaded.Value.Source.Sha256);
             Assert.Equal(1.1, loaded.Value.EditorState.Zoom);
-            Assert.DoesNotContain("romBytes", File.ReadAllText(path), StringComparison.OrdinalIgnoreCase);
+            var json = File.ReadAllText(path);
+            Assert.DoesNotContain("romBytes", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("romPathHint", json, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("emulatorPath", json, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -36,7 +41,7 @@ public sealed class ProjectStoreTests
     [Fact]
     public void VersionOneProjectMigratesPackedCoordinatesAndPaletteNamesToCurrentVersion()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-v1-{Guid.NewGuid():N}.smb3proj");
+        var path = Path.Combine(Path.GetTempPath(), $"warp-whistle-v1-{Guid.NewGuid():N}.wwproj");
         var horizontal = CreateDocument("horizontal", vertical: false) with
         {
             Elements =
@@ -50,7 +55,7 @@ public sealed class ProjectStoreTests
         };
         var legacy = new ProjectDocumentV2(
             1,
-            new ProjectSource("us-prg1", "abc", "def", "C:/owned/game.nes"),
+            new ProjectSource("us-prg1", "abc", "def"),
             new Dictionary<string, LevelDocument>
             {
                 [horizontal.AreaId] = horizontal,
@@ -89,7 +94,7 @@ public sealed class ProjectStoreTests
     [Fact]
     public void LocalSettingsRoundTripRomAndEmulatorPaths()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-settings-{Guid.NewGuid():N}.json");
+        var path = Path.Combine(Path.GetTempPath(), $"warp-whistle-settings-{Guid.NewGuid():N}.json");
         try
         {
             var saved = AppSettingsStore.Save(new AppSettingsV1(
@@ -116,10 +121,10 @@ public sealed class ProjectStoreTests
     [Fact]
     public void LegacyAddOnJsonMigratesToPatchesAndNewSavesUsePatches()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"smb3-editor-patches-{Guid.NewGuid():N}.smb3proj");
+        var path = Path.Combine(Path.GetTempPath(), $"warp-whistle-patches-{Guid.NewGuid():N}.wwproj");
         var project = new ProjectDocumentV2(
             4,
-            new ProjectSource("us-prg1", "abc", "def", "C:/owned/game.nes"),
+            new ProjectSource("us-prg1", "abc", "def"),
             new Dictionary<string, LevelDocument>(),
             new EditorState(),
             Patches: new PatchSettings(new PatchSetting(EnabledByDefault: true), new PatchSetting()));

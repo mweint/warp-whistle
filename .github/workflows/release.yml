@@ -39,7 +39,7 @@ jobs:
         shell: pwsh
         run: >
           pwsh -NoProfile -ExecutionPolicy Bypass -File tools/Build-PortablePackage.ps1
-          -PublishDirectory artifacts/release -Assembler tools/asm6f/asm6f_64.exe -OutputDirectory artifacts/portable;
+          -PublishDirectory artifacts/release -OutputDirectory artifacts/portable;
           Compress-Archive -Path artifacts/portable/WarpWhistle -DestinationPath
           "artifacts/WarpWhistle-${{ inputs.tag }}-win-x64.zip" -Force;
           pwsh -NoProfile -ExecutionPolicy Bypass -File tools/Verify-PortablePackage.ps1

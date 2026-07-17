@@ -26,23 +26,23 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
     // only in its disposable test ROM, never in normal exports.
     private const int TitleEntryOffset = 0x3C4AD;
     private const int PrepareLevelCallOffset = 0x3C937;
-    private const int RestartExitOffset = 0x3CF9E;
-    private const int AutoScrollCallOffset = 0x3CF3E;
-    private const int HarnessOffset = 0x3E921;
-    private const int TestAutoScrollWrapperOffset = 0x3DF20;
+    // PRG30 is fixed at CPU $8000-$9FFF. These four verified $FF ranges are
+    // separate from both the stock fixed bank and every built-in patch runtime.
+    private const int SetupPrimaryOffset = 0x3DF20;
+    private const int SetupPrimaryCapacity = 48;
+    private const int SetupContinuationOffset = 0x3DF70;
+    private const int SetupContinuationCapacity = 30;
+    private const int EntryStubOffset = 0x3DFC6;
+    private const int EntryStubCapacity = 74;
     // The entry stub
     // reproduces the stock map-to-level transition immediately before $88C8;
     // entering $88C8 directly leaves the title-screen NMI handler active.
-    private const ushort EntryStubAddress = 0xE911;
-    private const ushort PrepareHarnessAddress = 0xE932;
-    private const ushort TestAutoScrollWrapperAddress = 0x9F10;
-    private const ushort PatchRuntimeAddress = 0xE240;
-    private const ushort PatchRuntimeEnd = 0xE2BF;
+    private const ushort EntryStubAddress = 0x9FB6;
+    private const ushort SetupPrimaryAddress = 0x9F10;
+    private const ushort SetupContinuationAddress = 0x9F60;
     private const ushort LevelPreparationEntry = 0x88C8;
-    private const int HarnessCapacity = 111;
     private static readonly byte[] TitleEntryExpected = [0x20, 0xAF, 0xA8];
     private static readonly byte[] PrepareLevelExpected = [0x20, 0xFF, 0xB0];
-    private static readonly byte[] RestartExitExpected = [0xAE, 0x26, 0x07];
     private readonly IRomCompiler _compiler;
 
     public DirectLevelTestBuilder(IRomCompiler? compiler = null) => _compiler = compiler ?? new RomCompiler();
@@ -55,17 +55,7 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
             return OperationResult<DirectLevelTestArtifact>.Failure(compiled.Diagnostics.ToArray());
         }
 
-        var directTest = Build(compiled.Value!, source, selectedLevel);
-        if (!directTest.IsSuccess || (!(project.Patches ?? PatchSettings.None).HasEnabledOptions(source.Profile.Levels.Keys) && (project.ExternalPatches?.Count ?? 0) == 0))
-        {
-            return directTest;
-        }
-
-        return OperationResult<DirectLevelTestArtifact>.Success(
-            directTest.Value!,
-            directTest.Diagnostics.Append(Diagnostics.Warning(
-                "PLAY_LEVEL_PATCH_SCOPE",
-                "Play Level uses its own disposable restart harness. Test executable patches with Play ROM.")));
+        return Build(compiled.Value!, source, selectedLevel);
     }
 
     public OperationResult<DirectLevelTestArtifact> Build(BuildArtifact compiledRom, RomImage source, LevelLocation selectedLevel)
@@ -92,41 +82,53 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         }
 
         var entryStub = CreateEntryStub();
-        var prepareHarness = CreatePrepareHarness(verifiedLevel.Tileset, layoutPointer, enemyPointer);
-        if (entryStub.Length > PrepareHarnessAddress - EntryStubAddress ||
-            PrepareHarnessAddress - EntryStubAddress + prepareHarness.Length > HarnessCapacity)
+        var setup = CreateSetup(verifiedLevel.Tileset, layoutPointer, enemyPointer);
+        // Keep the split on an instruction boundary.  The four pointer writes
+        // are seven bytes each (LDA / STA zp / STA absolute), so the last safe
+        // primary byte is the end of the third map-state clear at index 43.
+        // Writing the bridge at index 45 cut LDA #$04 in half and returned
+        // through stock PRG30 code instead of continuing direct setup.
+        const int setupFirstSegmentLength = 44;
+        if (entryStub.Length > EntryStubCapacity ||
+            setup.Length > setupFirstSegmentLength + SetupContinuationCapacity - 1)
         {
             return OperationResult<DirectLevelTestArtifact>.Failure(
-                diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The verified PRG1 test harness exceeded its reserved temporary patch area.")).ToArray());
+                diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The verified PRG1 direct-entry payload exceeded its reserved temporary PRG30 area.")).ToArray());
         }
 
         var output = compiledRom.RomBytes.ToArray();
-        byte[]? autoScrollWrapper = null;
-        if (HasJsrIntoRetryArea(output, AutoScrollCallOffset))
+        if (!HasExpectedFill(output, SetupPrimaryOffset, SetupPrimaryCapacity, 0xFF) ||
+            !HasExpectedFill(output, SetupContinuationOffset, SetupContinuationCapacity, 0xFF) ||
+            !HasExpectedFill(output, EntryStubOffset, EntryStubCapacity, 0xFF))
         {
-            var target = (ushort)(output[AutoScrollCallOffset + 1] | (output[AutoScrollCallOffset + 2] << 8));
-            var sourceOffset = 0x3E010 + target - 0xE000;
-            autoScrollWrapper = output.AsSpan(sourceOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray();
-            if (!output.AsSpan(TestAutoScrollWrapperOffset, PatchCompiler.AutoScrollCallWrapperLength).ToArray().All(value => value == 0xFF))
-            {
-                return OperationResult<DirectLevelTestArtifact>.Failure(
-                    diagnostics.Append(Diagnostics.Error("PLAY_LEVEL_HARNESS", "The disposable auto-scroll wrapper area is unavailable.")).ToArray());
-            }
+            return OperationResult<DirectLevelTestArtifact>.Failure(
+                diagnostics.Append(Diagnostics.Error(
+                    "PLAY_LEVEL_SPACE",
+                    "The verified temporary PRG30 direct-entry space is unavailable in this compiled ROM."))
+                    .ToArray());
         }
 
-        // Play Level owns this complete temporary region. Remove any export-only
-        // retry/wrapper bytes before installing the disposable launch harness.
-        output.AsSpan(HarnessOffset, HarnessCapacity).Fill(0xFF);
+        // Do not alter fixed-bank patch runtime or retry/autoscroll hooks. The
+        // selected-level injection lives only in unused PRG30 bytes. Quick Retry
+        // keeps its verified $E94E prepare hook; direct setup raises its one-shot
+        // flag, so that hook bypasses Map_PrepareLevel itself.
         WriteJump(output, TitleEntryOffset, EntryStubAddress);
-        WriteJsr(output, PrepareLevelCallOffset, PrepareHarnessAddress);
-        WriteJump(output, RestartExitOffset, EntryStubAddress);
-        if (autoScrollWrapper is not null)
+        if (HasExpectedBytes(output, PrepareLevelCallOffset, PrepareLevelExpected))
         {
-            autoScrollWrapper.CopyTo(output, TestAutoScrollWrapperOffset);
-            WriteJsr(output, AutoScrollCallOffset, TestAutoScrollWrapperAddress);
+            var setupRtsAddress = (ushort)(SetupContinuationAddress + Math.Max(0, setup.Length - setupFirstSegmentLength));
+            WriteJsr(output, PrepareLevelCallOffset, setupRtsAddress);
         }
-        entryStub.CopyTo(output, HarnessOffset);
-        prepareHarness.CopyTo(output, HarnessOffset + PrepareHarnessAddress - EntryStubAddress);
+        else if (!HasExpectedBytes(output, PrepareLevelCallOffset, [0x20, 0x4E, 0xE9]))
+        {
+            return OperationResult<DirectLevelTestArtifact>.Failure(
+                diagnostics.Append(Diagnostics.Error(
+                    "PLAY_LEVEL_PREPARE_HOOK",
+                    "Play Level found an unverified level-preparation hook and will not replace it."))
+                    .ToArray());
+        }
+
+        entryStub.CopyTo(output, EntryStubOffset);
+        WriteSplitPayload(output, setup, setupFirstSegmentLength);
 
         var artifact = new DirectLevelTestArtifact(
             output,
@@ -153,12 +155,11 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
 
         var hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         if (!string.Equals(hash, artifact.Sha256, StringComparison.Ordinal) ||
-            !HasExpectedBytes(bytes, TitleEntryOffset, [0x4C, 0x11, 0xE9]) ||
-            !HasExpectedBytes(bytes, PrepareLevelCallOffset, [0x20, 0x32, 0xE9]) ||
-            !HasExpectedBytes(bytes, RestartExitOffset, [0x4C, 0x11, 0xE9]) ||
-            !HasExpectedBytes(bytes, HarnessOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
-            !HasExpectedBytes(bytes, HarnessOffset + PrepareHarnessAddress - EntryStubAddress, [0xA9]) ||
-            bytes[HarnessOffset + HarnessCapacity - 1] != 0xFF)
+            !HasExpectedBytes(bytes, TitleEntryOffset, [0x4C, 0xB6, 0x9F]) ||
+            !HasDirectPrepareCall(bytes) ||
+            !HasExpectedBytes(bytes, EntryStubOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
+            !HasExpectedBytes(bytes, SetupPrimaryOffset, [0xA9]) ||
+            bytes[EntryStubOffset + EntryStubCapacity - 1] != 0xFF)
         {
             return OperationResult<string>.Failure(Diagnostics.Error("PLAY_LEVEL_VERIFY", "The temporary test ROM did not pass direct-level patch verification."));
         }
@@ -231,6 +232,8 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
 
     private static byte[] CreateEntryStub() =>
     [
+        // Retain page $07: its active map/bank context is required while this
+        // temporary entry is still executing from switchable PRG30.
         0xA0, 0x06,                   // LDY #$06
         0x20, 0xCE, 0x96,             // JSR Clear_RAM_thru_ZeroPage: remove all death-state RAM
         0xEE, 0x55, 0x79,             // INC UpdSel_Disable: stop title-screen NMI updates
@@ -243,10 +246,10 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
         0x8D, 0xEE, 0x05,             // STA Level_TimerMSD
         0xA9, 0x00,                   // LDA #$00
         0x8D, 0x13, 0x07,             // STA Map_ReturnStatus: clear the death exit before restarting
-        0x4C, (byte)(LevelPreparationEntry & 0xFF), (byte)(LevelPreparationEntry >> 8) // JMP $88C8
+        0x4C, (byte)(SetupPrimaryAddress & 0xFF), (byte)(SetupPrimaryAddress >> 8) // JMP direct setup in unused PRG30 space
     ];
 
-    private static byte[] CreatePrepareHarness(int tileset, ushort layoutPointer, ushort enemyPointer)
+    private static byte[] CreateSetup(int tileset, ushort layoutPointer, ushort enemyPointer)
     {
         var code = new List<byte>();
         void LoadAndStore(byte value, ushort address)
@@ -254,77 +257,60 @@ public sealed class DirectLevelTestBuilder : IDirectLevelTestBuilder
             code.Add(0xA9); code.Add(value);       // LDA #value
             code.Add(0x8D); code.Add((byte)address); code.Add((byte)(address >> 8)); // STA address
         }
-        void LoadAndStoreZeroPage(byte value, byte address)
+        void LoadAndStorePointerByte(byte value, byte zeroPageAddress, ushort persistentAddress)
         {
             code.Add(0xA9); code.Add(value);       // LDA #value
-            code.Add(0x85); code.Add(address);     // STA address
+            code.Add(0x85); code.Add(zeroPageAddress); // STA zero page
+            code.Add(0x8D); code.Add((byte)persistentAddress); code.Add((byte)(persistentAddress >> 8)); // STA persistent pointer
         }
 
         LoadAndStore((byte)tileset, 0x070A); // Level_Tileset
-        LoadAndStoreZeroPage((byte)layoutPointer, 0x61);
-        LoadAndStoreZeroPage((byte)(layoutPointer >> 8), 0x62);
-        LoadAndStore((byte)layoutPointer, 0x7EB9); // original layout pointer
-        LoadAndStore((byte)(layoutPointer >> 8), 0x7EBA);
-        LoadAndStoreZeroPage((byte)enemyPointer, 0x65);
-        LoadAndStoreZeroPage((byte)(enemyPointer >> 8), 0x66);
-        LoadAndStore((byte)enemyPointer, 0x7EBB);  // original enemy pointer
-        LoadAndStore((byte)(enemyPointer >> 8), 0x7EBC);
-        LoadAndStore(0, 0x00ED); // Player_Suit: Small Mario
-        LoadAndStore(0, 0x03F3); // Map_Power_Disp
-        LoadAndStore(0, 0x0726); // Player_Current
-        LoadAndStore(0, 0x0727); // World_Num: World 1
-        LoadAndStore(0, 0x072B); // Total_Players: one player
+        LoadAndStorePointerByte((byte)layoutPointer, 0x61, 0x7EB9);
+        LoadAndStorePointerByte((byte)(layoutPointer >> 8), 0x62, 0x7EBA);
+        LoadAndStorePointerByte((byte)enemyPointer, 0x65, 0x7EBB);
+        LoadAndStorePointerByte((byte)(enemyPointer >> 8), 0x66, 0x7EBC);
+        // Clear_RAM_thru_ZeroPage already zeroes suit and map-power RAM. The
+        // following map-state values live above $06FF and need explicit reset.
+        code.Add(0xA9); code.Add(0x00); // LDA #$00
+        foreach (var address in new ushort[] { 0x0726, 0x0727, 0x072B })
+        {
+            code.Add(0x8D); code.Add((byte)address); code.Add((byte)(address >> 8));
+        }
         LoadAndStore(4, 0x0736); // Player_Lives: normal one-player starting lives
-        code.Add(0x60);           // RTS to the original level setup
+        LoadAndStore(1, 0x7EF0);  // Let the compiled Quick Retry prepare hook retain these pointers.
+        code.Add(0x4C); code.Add((byte)(LevelPreparationEntry & 0xFF)); code.Add((byte)(LevelPreparationEntry >> 8));
         return code.ToArray();
+    }
+
+    private static void WriteSplitPayload(byte[] output, ReadOnlySpan<byte> payload, int firstSegmentLength)
+    {
+        payload[..Math.Min(payload.Length, firstSegmentLength)].CopyTo(output.AsSpan(SetupPrimaryOffset));
+        if (payload.Length <= firstSegmentLength)
+        {
+            output[SetupPrimaryOffset + payload.Length] = 0x60; // RTS for the stock prepare-call replacement.
+            return;
+        }
+
+        WriteJump(output, SetupPrimaryOffset + firstSegmentLength, SetupContinuationAddress);
+        payload[firstSegmentLength..].CopyTo(output.AsSpan(SetupContinuationOffset));
+        output[SetupContinuationOffset + payload.Length - firstSegmentLength] = 0x60; // RTS for the stock prepare-call replacement.
     }
 
     private static bool HasExpectedBytes(ReadOnlySpan<byte> bytes, int offset, ReadOnlySpan<byte> expected) =>
         offset >= 0 && offset <= bytes.Length - expected.Length && bytes.Slice(offset, expected.Length).SequenceEqual(expected);
 
-    private static bool HasExpectedBytesAny(ReadOnlySpan<byte> bytes, int offset, params byte[][] expected)
+    private static bool HasDirectPrepareCall(ReadOnlySpan<byte> bytes)
     {
-        foreach (var item in expected)
-        {
-            if (HasExpectedBytes(bytes, offset, item)) return true;
-        }
-        return false;
-    }
-
-    private static bool HasJsrIntoRetryArea(ReadOnlySpan<byte> bytes, int offset)
-    {
-        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x20) return false;
-        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
-        return target is >= 0xE911 and <= 0xE9AF;
-    }
-
-    private static bool HasJsrIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
-    {
-        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x20) return false;
-        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
-        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
-    }
-
-    private static bool HasJumpIntoPatchRuntime(ReadOnlySpan<byte> bytes, int offset)
-    {
-        if (offset < 0 || offset > bytes.Length - 3 || bytes[offset] != 0x4C) return false;
-        var target = (ushort)(bytes[offset + 1] | (bytes[offset + 2] << 8));
-        return target is >= PatchRuntimeAddress and <= PatchRuntimeEnd;
+        if (HasExpectedBytes(bytes, PrepareLevelCallOffset, [0x20, 0x4E, 0xE9])) return true;
+        if (PrepareLevelCallOffset < 0 || PrepareLevelCallOffset > bytes.Length - 3 || bytes[PrepareLevelCallOffset] != 0x20) return false;
+        var target = (ushort)(bytes[PrepareLevelCallOffset + 1] | (bytes[PrepareLevelCallOffset + 2] << 8));
+        if (target < SetupPrimaryAddress || target >= SetupContinuationAddress + SetupContinuationCapacity) return false;
+        var offset = 0x3C010 + target - 0x8000;
+        return offset >= 0 && offset < bytes.Length && bytes[offset] == 0x60;
     }
 
     private static bool HasExpectedFill(ReadOnlySpan<byte> bytes, int offset, int length, byte value) =>
         offset >= 0 && length >= 0 && offset <= bytes.Length - length && bytes.Slice(offset, length).ToArray().All(item => item == value);
-
-    private static bool HasSourceBytes(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source, int offset, int length) =>
-        offset >= 0 && length >= 0 && offset <= bytes.Length - length && offset <= source.Length - length &&
-        bytes.Slice(offset, length).SequenceEqual(source.Slice(offset, length));
-
-    private static bool HasExpectedHarness(ReadOnlySpan<byte> bytes, ReadOnlySpan<byte> source) =>
-        HasExpectedFill(bytes, HarnessOffset, HarnessCapacity, 0xFF) ||
-        HasSourceBytes(bytes, source, HarnessOffset, HarnessCapacity) ||
-        HasExpectedBytes(bytes, HarnessOffset, [0xA0, 0x06, 0x20, 0xCE, 0x96]) ||
-        HasExpectedBytes(bytes, HarnessOffset, [0xEE, 0x55, 0x79, 0xA9, 0x28]) ||
-        HasExpectedBytes(bytes, HarnessOffset, [0xA2, 0xFF, 0x9A, 0xEE, 0x55]);
 
     private static void WriteJump(byte[] bytes, int offset, ushort target)
     {

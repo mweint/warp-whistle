@@ -23,16 +23,6 @@ public static class WorkspacePaths
         try
         {
             var root = Path.GetFullPath(applicationDirectory);
-            // Keep the source checkout tidy: its user-owned workspace lives under
-            // ignored .local/workspace. Portable releases have no .local folder
-            // and continue using the release-root folders directly.
-            var localWorkspace = Path.Combine(root, ".local", "workspace");
-            if (Directory.Exists(localWorkspace) &&
-                File.Exists(Path.Combine(root, "Smb3Editor.slnx")))
-            {
-                root = localWorkspace;
-            }
-
             Directory.CreateDirectory(Path.Combine(root, "Data"));
             var probe = Path.Combine(root, "Data", $".write-{Guid.NewGuid():N}.tmp");
             File.WriteAllText(probe, string.Empty);

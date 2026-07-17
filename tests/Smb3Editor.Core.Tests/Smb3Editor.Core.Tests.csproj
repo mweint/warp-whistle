@@ -6,7 +6,7 @@
     <RootNamespace>Smb3Editor.Core.Tests</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="../../tools/asm6f/asm6f_64.exe" Link="asm6f_64.exe" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../tools/asm6f/asm6f_64.exe" Link="tools/asm6f/asm6f_64.exe" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../../src/Smb3Editor.Core/Smb3Editor.Core.csproj" />
     <PackageReference Include="xunit.v3" />
   </ItemGroup>

@@ -88,8 +88,16 @@ public sealed class PatchCompiler
         if (overrideIds.Length > maximumOverrides)
             return OperationResult<byte[]>.Failure(Diagnostics.Error("PATCH_SPACE", $"The enabled patches use {overrideIds.Length} explicit level overrides; this patch package supports at most {maximumOverrides}."));
 
-        byte Flags(string? areaId) => (byte)features.Aggregate(0, (flags, feature) =>
-            flags | ((areaId is null ? settings.Get(feature.Id)?.EnabledByDefault == true : (settings.Get(feature.Id) ?? new()).IsEnabledFor(areaId)) ? feature.Flag : 0));
+        byte Flags(string? areaId)
+        {
+            var flags = features.Aggregate(0, (value, feature) =>
+                value | ((areaId is null ? settings.Get(feature.Id)?.EnabledByDefault == true : (settings.Get(feature.Id) ?? new()).IsEnabledFor(areaId)) ? feature.Flag : 0));
+            // Quick Retry owns a separate death path. Carry the global-only
+            // Infinite Lives choice into its runtime flags so that combining
+            // the two patches does not reintroduce a life decrement.
+            if (settings.Get("infinite-lives")?.EnabledByDefault == true) flags |= 0x08;
+            return (byte)flags;
+        }
         var bytes = Enumerable.Repeat((byte)0xFF, configuration.Capacity).ToArray();
         for (var index = 0; index < overrideIds.Length; index++)
         {

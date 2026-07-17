@@ -5,10 +5,12 @@ namespace Smb3Editor.Core;
 public sealed record AppSettingsV1(
     int FormatVersion = 1,
     string? LastRomPath = null,
+    string? RomUrl = null,
     string? EmulatorPath = null,
     IReadOnlyList<string>? EmulatorArguments = null,
     string PlayMode = "rom",
-    bool? GroupCatalogVariants = null)
+    bool? GroupCatalogVariants = null,
+    bool? SetupCompleted = null)
 {
     public const int CurrentFormatVersion = 1;
 }

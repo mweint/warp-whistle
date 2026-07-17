@@ -27,7 +27,7 @@ patch_resolve_next:
 
 patch_resolve_global:
   lda PATCH_META
-  and #$07
+  and #$0f
   rts
 
 patch_resolve_found:
